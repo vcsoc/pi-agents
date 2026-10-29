@@ -194,6 +194,8 @@ export class KanbanController {
         let lease: Lease;
         try { lease = this.store.claim(t.id, this.owner, commentOnly, isolated, capacity?.limit); }
         catch (e) {
+          // A board lock is transient, not a task conflict; retry on the next poll.
+          if (e instanceof KanbanBoardBusyError) throw e;
           const reason = e instanceof Error ? e.message : String(e);
           const poolWait = reason.startsWith("Kanban lease capacity ");
           this.queue(t.id, { state: poolWait ? "capacity" : "conflict", reason, ...(poolWait ? { limit: capacity?.limit } : {}), dependencyId: /dependency: ([^ ]+)/.exec(reason)?.[1] });

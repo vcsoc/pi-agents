@@ -90,10 +90,21 @@ export class KanbanStore {
         const pid = Number(readFileSync(join(lock, "pid"), "utf8"));
         if (!Number.isInteger(pid) || pid < 1) throw new Error("Invalid lock owner");
         try { process.kill(pid, 0); } catch (e) { stale = (e as NodeJS.ErrnoException).code === "ESRCH"; }
-      } catch { stale = Date.now() - statSync(lock).mtimeMs > 30000; }
+      } catch (e) {
+        const info = statSync(lock, { throwIfNoEntry: false });
+        if ((info && !info.isDirectory()) || (!info && !existsSync(this.directory))) throw e;
+        stale = info !== undefined && Date.now() - info.mtimeMs > 30000;
+      }
       if (!stale) throw new KanbanBoardBusyError();
-      rmSync(lock, { recursive: true });
-      mkdirSync(lock);
+      try {
+        rmSync(lock, { recursive: true });
+        mkdirSync(lock);
+      } catch (e) {
+        // Another process may release or reclaim the lock during stale recovery.
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "EEXIST" || (code === "ENOENT" && existsSync(this.directory))) throw new KanbanBoardBusyError();
+        throw e;
+      }
     }
     const temporary = `${this.file}.${randomUUID()}.tmp`;
     try {

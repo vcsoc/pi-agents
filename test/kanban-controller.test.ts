@@ -67,6 +67,72 @@ describe("Kanban dispatch polling", () => {
     expect(jobs).toHaveLength(1); expect(task(id).runs).toBe(1);
     expect(notify).not.toHaveBeenCalled();
   });
+  it("does not persist typed claim contention as a task conflict", async () => {
+    const id = readyTask(), before = store.read();
+    const claim = vi.spyOn(store, "claim").mockImplementationOnce(() => { throw new KanbanBoardBusyError(); });
+    const queueWrite = vi.spyOn(store, "change");
+    controller.start();
+    await vi.advanceTimersByTimeAsync(750);
+    expect(claim).toHaveBeenCalledTimes(1);
+    expect(queueWrite).not.toHaveBeenCalled();
+    expect(store.read()).toEqual(before); expect(jobs).toHaveLength(0);
+    expect(notify).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(750);
+    expect(claim).toHaveBeenCalledTimes(2); expect(jobs).toHaveLength(1);
+    expect(task(id)).toMatchObject({ runs: 1, column: "in progress" });
+    expect(task(id).queue).toBeUndefined();
+  });
+  it("retries a stale lock disappearing during recovery without pausing polling", async () => {
+    const id = readyTask(), before = store.read(), release = holdBoardLock();
+    vi.spyOn(process, "kill").mockImplementationOnce(() => {
+      release();
+      throw Object.assign(new Error("Lock owner exited"), { code: "ESRCH" });
+    });
+    controller.start();
+    await vi.advanceTimersByTimeAsync(750);
+    expect(store.read()).toEqual(before); expect(jobs).toHaveLength(0);
+    expect(notify).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(750);
+    expect(jobs).toHaveLength(1); expect(task(id).runs).toBe(1);
+  });
+  it("does not overlap preparation across interval and manual ticks", async () => {
+    const t = store.create({ ...spec, prMode: "review" }, "orchestrator");
+    store.move(t.id, "ready", "user");
+    let resume!: (value: Awaited<ReturnType<Command>>) => void;
+    const preparation = new Promise<Awaited<ReturnType<Command>>>(resolve => { resume = resolve; });
+    run.mockImplementation(async (_file, args) => ({ code: 0, stdout: args[0] === "branch" ? `pi-kban/${t.id}` : "", stderr: "" }));
+    run.mockImplementationOnce(() => preparation);
+    const claim = vi.spyOn(store, "claim");
+    controller.start();
+    await vi.advanceTimersByTimeAsync(750);
+    try {
+      await controller.tick();
+      await vi.advanceTimersByTimeAsync(2250);
+      expect(claim).toHaveBeenCalledTimes(1); expect(run).toHaveBeenCalledTimes(1);
+      expect(jobs).toHaveLength(0); expect(task(t.id).runs).toBe(1);
+    } finally { resume({ code: 0, stdout: cwd, stderr: "" }); }
+    await vi.advanceTimersByTimeAsync(0);
+    expect(jobs).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(claim).toHaveBeenCalledTimes(1); expect(jobs).toHaveLength(1);
+    expect(notify).not.toHaveBeenCalled();
+  });
+  it("cancels a paused worker before retrying contended lease cleanup", async () => {
+    const id = await start();
+    store.move(id, "backlog", "user");
+    const release = holdBoardLock();
+    controller.start();
+    try {
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(jobs[0].signal.aborted).toBe(true);
+      expect(stop).toHaveBeenCalledExactlyOnceWith("0");
+      expect(task(id).executionLease).toBeDefined();
+      expect(notify).not.toHaveBeenCalled();
+    } finally { release(); }
+    await vi.advanceTimersByTimeAsync(750);
+    expect(task(id).executionLease).toBeUndefined(); expect(task(id).column).toBe("backlog");
+    expect(jobs).toHaveLength(1); expect(task(id).runs).toBe(1);
+  });
   function contendAfterClaim(setupError?: Error) {
     const claim = store.claim.bind(store);
     let unlock!: () => void;

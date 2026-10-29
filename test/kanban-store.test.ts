@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { KanbanStore, type Lease, type NewTask, projectIdentity, rubricScore } from "../src/kanban/store.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { KanbanBoardBusyError, KanbanStore, type Lease, type NewTask, projectIdentity, rubricScore } from "../src/kanban/store.js";
 
 let root: string, cwd: string, store: KanbanStore;
 const spec: NewTask = { title: "Implement login", scope: "Add validated login and regression tests", assignee: "operate", rubric: [{ title: "Correctness", weight: 60 }, { title: "Test coverage and security", weight: 40 }] };
@@ -16,7 +16,7 @@ function testerDone(id: string) { const lease = operatorDone(id); evidence(id, l
 function reviewerDone(id: string) { const lease = testerDone(id); store.evaluate(id, "reviewer", [90, 90], "Reviewed correctness, security, and tests", hash, "reviewer-id", lease); store.handoff(id, lease, "Review passed", hash); }
 
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "pi-kanban-store-")); cwd = join(root, "project"); mkdirSync(cwd); store = new KanbanStore(cwd, join(root, "state")); });
-afterEach(() => rmSync(root, { recursive: true, force: true }));
+afterEach(() => { vi.restoreAllMocks(); rmSync(root, { recursive: true, force: true }); });
 describe("persistent project Kanban", () => {
   it("resumes a stopped tester without resetting its revision or evidence", () => {
     const t = create(), lease = operatorDone(t.id);
@@ -165,6 +165,31 @@ describe("persistent project Kanban", () => {
   it("done-task comments allow only an explicit read-only response capability", () => { const t = create(); reviewerDone(t.id); store.evaluate(t.id, "orchestrator", [100, 100], "Verified", hash, "root"); store.complete(t.id, hash); store.comment(t.id, "What tests covered this?", "user"); const lease = store.claim(t.id, "reply", true); store.assertActive(current(t.id), lease); store.comment(t.id, "The recorded npm tests cover the login paths", "operator"); store.handoff(t.id, lease, "Answered", hash); expect(current(t.id).column).toBe("done"); expect(() => store.claim(t.id, "reply-again", true)).toThrow(/unanswered/); });
   it("retains an exhausted run budget across orchestrator requeues", () => { const t = create(); store.change(b => { store.task(b, t.id).runs = 12; }); store.move(t.id, "ready", "orchestrator"); expect(() => store.claim(t.id, "worker")).toThrow(/budget/); store.move(t.id, "backlog", "user"); store.move(t.id, "ready", "user"); expect(store.claim(t.id, "worker")).toBeDefined(); });
   it("does not reset corrupt durable state", () => { writeFileSync(store.file, "broken JSON"); expect(() => store.read()).toThrow(); expect(readFileSync(store.file, "utf8")).toBe("broken JSON"); });
-  it("uses an exclusive cross-process mutation lock", () => { const lock = join(store.directory, "write.lock"); mkdirSync(lock); writeFileSync(join(lock, "pid"), String(process.pid)); expect(() => create()).toThrow(/busy/); expect(store.read().tasks).toHaveLength(0); });
+  it("uses a typed exclusive cross-process mutation lock", () => {
+    const lock = join(store.directory, "write.lock"), before = readFileSync(store.file);
+    mkdirSync(lock); writeFileSync(join(lock, "pid"), String(process.pid));
+    expect(() => create()).toThrow(KanbanBoardBusyError);
+    expect(readFileSync(store.file)).toEqual(before);
+    expect(readFileSync(join(lock, "pid"), "utf8")).toBe(String(process.pid));
+  });
+  it("treats a disappearing stale lock as contention without changing the board", () => {
+    const lock = join(store.directory, "write.lock"), before = readFileSync(store.file), mutate = vi.fn();
+    mkdirSync(lock); writeFileSync(join(lock, "pid"), "2147483647");
+    vi.spyOn(process, "kill").mockImplementationOnce(() => {
+      rmSync(lock, { recursive: true });
+      throw Object.assign(new Error("Owner exited while another process removed its lock"), { code: "ESRCH" });
+    });
+    expect(() => store.change(mutate)).toThrow(KanbanBoardBusyError);
+    expect(mutate).not.toHaveBeenCalled(); expect(readFileSync(store.file)).toEqual(before);
+    expect(create().column).toBe("backlog");
+  });
+  it("does not disguise genuine lock storage errors as contention", () => {
+    writeFileSync(join(store.directory, "write.lock"), "Not a lock directory");
+    let failure: unknown;
+    try { create(); } catch (e) { failure = e; }
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(KanbanBoardBusyError);
+    expect(store.read().tasks).toHaveLength(0);
+  });
   it("recovers a lock whose owner no longer exists", () => { const lock = join(store.directory, "write.lock"); mkdirSync(lock); writeFileSync(join(lock, "pid"), "2147483647"); expect(create().column).toBe("backlog"); });
 });

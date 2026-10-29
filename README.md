@@ -821,6 +821,17 @@ The four agent-lifecycle events — `subagents:started`, `:completed`, `:failed`
 
 `usage` answers the other question — what was billed — and so does include `cacheRead`, because the prefix really is re-read and re-charged on every call. It is a pi `Usage`, the same shape pi puts on `ToolResultEvent` and `AssistantMessage`, so `usage.cost.total` is where a listener already expects the money and anything pi adds to `Usage` arrives without a change here. Neither field derives from the other; `tokens` is a view model, `usage` is the data.
 
+## Herdr Host Integration
+
+Running Pi inside Herdr does not currently give each in-process SDK child its
+own Herdr Agents-panel entry. The inspected host API registers agents against
+terminal panes, not independent child sessions; reporting every child against
+the inherited parent pane would overwrite the parent rather than group children.
+Native agents and workflows still operate normally with Kanban web on or off.
+See [Herdr compatibility](docs/herdr.md) for verified API limits and the required
+host-side capability. This Pi extension does not install integrations into
+other agent harnesses.
+
 ## Cross-Extension RPC
 
 Other pi extensions can spawn and stop subagents programmatically via the `pi.events` event bus, without importing this package directly.
