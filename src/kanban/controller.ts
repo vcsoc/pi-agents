@@ -8,7 +8,7 @@ import type { KanbanBinding } from "./agent.js";
 import { AuditOutbox } from "./audit-outbox.js";
 import { type Command, checked, command, fingerprint, prBody } from "./execution.js";
 import { createSnapshot, integrateSnapshot } from "./snapshot.js";
-import { type Criterion, KanbanStore, type Lease, type NewTask, type Role, type Task, text } from "./store.js";
+import { type Criterion, KanbanBoardBusyError, KanbanStore, type Lease, type NewTask, type Role, type Task, text } from "./store.js";
 
 export interface KanbanDependencies {
   spawn: (type: string, prompt: string, binding: KanbanBinding, cwd: string, signal: AbortSignal) => string;
@@ -37,6 +37,7 @@ export const KANBAN_GUIDELINES = `The native Pi harness is the primary operation
 export class KanbanController {
   readonly owner = randomUUID();
   private jobs = new Map<string, Job>();
+  private pendingSetup?: { id: string; lease: Lease; error: string };
   private timer?: ReturnType<typeof setInterval>;
   private ticking = false;
   private closed = false;
@@ -59,9 +60,20 @@ export class KanbanController {
   private auditDegraded(error: unknown) {
     this.deps.notify(`Kanban audit delivery degraded; tools/handoff blocked, durable events retained for retry: ${String(error)}`);
   }
+  private releasePendingSetup() {
+    const pending = this.pendingSetup;
+    if (!pending) return;
+    this.store.release(pending.id, pending.lease, pending.error, true);
+    this.pendingSetup = undefined;
+  }
   start() {
     if (this.timer || this.closed) return;
-    this.timer = setInterval(() => { void this.tick().catch(e => { if (this.timer) clearInterval(this.timer); this.timer = undefined; this.deps.notify(`Kanban dispatch paused after an error: ${String(e)}`); }); }, 750);
+    this.timer = setInterval(() => { void this.tick().catch(e => {
+      if (e instanceof KanbanBoardBusyError) return;
+      if (this.timer) clearInterval(this.timer);
+      this.timer = undefined;
+      this.deps.notify(`Kanban dispatch paused after an error: ${String(e)}`);
+    }); }, 750);
     this.timer.unref();
   }
   async close() {
@@ -75,8 +87,10 @@ export class KanbanController {
     }
     await Promise.all(pending);
     for (const [id, j] of this.jobs) {
-      try { this.store.release(id, j.lease, "Session stopped; return to backlog then ready to resume", true); } catch (e) { failures.push(String(e)); }
+      try { this.store.release(id, j.lease, "Session stopped; use ready to retry this checkpoint without resetting evidence", true); } catch (e) { failures.push(String(e)); }
     }
+    try { this.releasePendingSetup(); }
+    catch (e) { failures.push(`Task ${this.pendingSetup!.id} setup failed: ${this.pendingSetup!.error}; lease cleanup pending: ${String(e)}`); }
     try { this.flushAudit(); } catch (e) { this.auditDegraded(e); failures.push(String(e)); }
     this.jobs.clear();
     if (failures.length) throw new Error(`Kanban workers stopped, but cleanup needs attention: ${failures.join("; ")}`);
@@ -127,6 +141,8 @@ export class KanbanController {
         try { this.store.assertActive(this.store.task(board, id), j.lease); }
         catch { if (!j.abort.signal.aborted) { j.abort.abort(); this.deps.stop(j.agentId); } }
       }
+      // Dispatch is serial: drain the single failed preparation before claiming anything else.
+      this.releasePendingSetup();
       try { this.flushAudit(); } catch (e) { this.auditDegraded(e); return; }
       board = this.store.read();
       for (const [id, j] of this.jobs) {
@@ -144,7 +160,7 @@ export class KanbanController {
           }
         }
         if (j.settled || (!record || (terminal.has(record.status) && !record.promise))) {
-          this.store.release(id, j.lease, t.lease?.token === j.lease.token ? t.blocked ?? "Agent ended without a valid handoff. Read its transcript, then move backlog -> ready to retry." : undefined, true);
+          this.store.release(id, j.lease, t.lease?.token === j.lease.token ? t.blocked ?? "Agent ended without a valid handoff. Read its transcript, then use ready to retry this checkpoint without resetting evidence." : undefined, true);
           this.jobs.delete(id);
         }
       }
@@ -186,7 +202,15 @@ export class KanbanController {
           const binding = this.binding(t.id, lease, abort.signal);
           const agentId = this.deps.spawn(type, binding.prompt, binding, cwd, abort.signal);
           this.jobs.set(t.id, { lease, agentId, abort, settled: false, comments: new Set(t.comments.map(c => c.id)) });
-        } catch (e) { abort.abort(); this.store.release(t.id, lease, String(e), true); }
+        } catch (e) {
+          abort.abort();
+          this.pendingSetup = { id: t.id, lease, error: String(e) };
+          try { this.releasePendingSetup(); }
+          catch (cleanupError) {
+            this.deps.notify(`Kanban task ${t.id} setup failed: ${String(e)}; lease cleanup pending (dispatch blocked until release succeeds): ${String(cleanupError)}`);
+            throw cleanupError;
+          }
+        }
         board = this.store.read();
       }
     } finally { this.ticking = false; }

@@ -50,6 +50,12 @@ export function projectIdentity(cwd: string) {
   const projectPath = realpathSync(cwd);
   return { projectPath, id: createHash("sha256").update(projectPath).digest("hex"), name: basename(projectPath) || projectPath };
 }
+export class KanbanBoardBusyError extends Error {
+  constructor() {
+    super("Kanban board is busy; retry the operation");
+    this.name = "KanbanBoardBusyError";
+  }
+}
 export class KanbanStore {
   readonly directory: string;
   readonly file: string;
@@ -84,7 +90,7 @@ export class KanbanStore {
         if (!Number.isInteger(pid) || pid < 1) throw new Error("Invalid lock owner");
         try { process.kill(pid, 0); } catch (e) { stale = (e as NodeJS.ErrnoException).code === "ESRCH"; }
       } catch { stale = Date.now() - statSync(lock).mtimeMs > 30000; }
-      if (!stale) throw new Error("Kanban board is busy; retry the operation");
+      if (!stale) throw new KanbanBoardBusyError();
       rmSync(lock, { recursive: true });
       mkdirSync(lock);
     }
@@ -229,6 +235,7 @@ export class KanbanStore {
       if (t.archived) throw new Error("Archived tasks cannot be resumed");
       if (column === "ready" && t.userPaused && actor !== "user") throw new Error("Only the user may release a task they paused in backlog");
       if (column === "backlog") { this.reset(t); t.column = column; if (actor === "user") t.userPaused = true; }
+      else if (column === "ready" && t.blocked && !t.lease && !t.executionLease && t.column !== "done") { validateRubric(t.rubric); t.blocked = undefined; t.queue = undefined; t.userPaused = false; }
       else if (column === "ready" && t.column === "backlog") { validateRubric(t.rubric); t.column = column; t.userPaused = false; if (actor === "user") t.runs = 0; }
       else throw new Error("Drag a task to backlog to pause/edit it, then to ready. Review and done require agent evidence.");
       this.audit(t, actor, `moved to ${column}`);
@@ -335,6 +342,7 @@ export class KanbanStore {
     return this.change(b => {
       const t = this.task(b, id); this.assertActive(t, lease);
       if (lease.role !== "tester") throw new Error("Only the tester can record test executions");
+      // Keep every attempt in history; current evidence is the latest run of each exact command.
       t.tests = t.tests.filter(e => e.command !== evidence.command);
       t.tests.push(evidence); this.audit(t, "tester", "test executed", evidence);
     });
@@ -347,7 +355,7 @@ export class KanbanStore {
       const total = rubricScore(t.rubric, scores);
       const e: Evaluation = { role, actor: lease?.identity?.name ?? actor, revision: t.revision, scores, total, notes: text(notes, "Detailed evaluation/fix instructions"), fingerprint, at: now() };
       if (t.fingerprint !== fingerprint) throw new Error("Work changed since submission. Return the task to backlog and retest the new revision.");
-      if (role === "tester" && (!t.tests.length || t.tests.some(e => e.fingerprint !== fingerprint || (total >= 85 && e.exitCode !== 0)))) throw new Error("Tester must execute passing tests against the submitted revision before scoring");
+      if (role === "tester" && (!t.tests.length || t.tests.some(e => e.fingerprint !== fingerprint || (total >= 85 && e.exitCode !== 0)))) throw new Error("Tester must execute passing tests against the submitted revision before scoring. Rerun each failed command exactly after correcting its cause; a different or filtered command does not supersede it. Historical attempts remain in the audit history.");
       t.evaluations[role] = e; this.audit(t, lease?.identity?.name ?? actor, "rubric evaluation", e, null, lease?.identity);
       this.appendComment(t, `${total.toFixed(2)}%: ${e.notes}`, role);
       if (total < 85) { this.reset(t); if (t.snapshot) t.snapshot.revision = t.revision; t.column = "ready"; }

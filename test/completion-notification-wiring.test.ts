@@ -124,7 +124,7 @@ describe("background completion notification wiring", () => {
         customType: "subagent-notification",
         content: expect.stringContaining("individual child"),
       }),
-      { deliverAs: "steer", triggerTurn: true },
+      { deliverAs: "followUp", triggerTurn: true },
     );
 
     await handlers.get("session_shutdown")?.();
@@ -161,7 +161,7 @@ describe("background completion notification wiring", () => {
           others: [expect.objectContaining({ description: "second batched child" })],
         }),
       }),
-      { deliverAs: "steer", triggerTurn: true },
+      { deliverAs: "followUp", triggerTurn: true },
     );
 
     await handlers.get("session_shutdown")?.();

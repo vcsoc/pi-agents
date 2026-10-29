@@ -101,7 +101,7 @@ describe("completion delivery to a running parent", () => {
     turnEnd(b);
     expect(b.pi.sendMessage).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ content: expect.stringContaining("alpha done") }),
-      { deliverAs: "steer", triggerTurn: true },
+      { deliverAs: "followUp", triggerTurn: true },
     );
   });
 
@@ -169,7 +169,7 @@ describe("completion delivery to a running parent", () => {
     await vi.advanceTimersByTimeAsync(200);
     expect(b.pi.sendMessage).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ content: expect.stringContaining("alpha done") }),
-      { deliverAs: "steer", triggerTurn: true },
+      { deliverAs: "followUp", triggerTurn: true },
     );
   });
   it("drops a completion whose result another extension consumed over RPC before the boundary", async () => {

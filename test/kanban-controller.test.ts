@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,7 +6,7 @@ import type { KanbanBinding } from "../src/kanban/agent.js";
 import { bindKanbanGate, kanbanGate } from "../src/kanban/agent.js";
 import { KanbanController } from "../src/kanban/controller.js";
 import { type Command, fingerprint, prBody } from "../src/kanban/execution.js";
-import { KanbanStore, type NewTask } from "../src/kanban/store.js";
+import { KanbanBoardBusyError, KanbanStore, type NewTask } from "../src/kanban/store.js";
 import type { AgentRecord } from "../src/types.js";
 
 let root: string, cwd: string, store: KanbanStore, controller: KanbanController;
@@ -31,7 +31,138 @@ beforeEach(() => {
     record: id => jobs.find(j => j.record.id === id)?.record, stop, steer, validAgent: () => true, notify, run,
   });
 });
-afterEach(async () => { await controller.close(); rmSync(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  try { await controller.close(); }
+  finally { vi.restoreAllMocks(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
+});
+describe("Kanban dispatch polling", () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  function holdBoardLock() {
+    const lock = join(store.directory, "write.lock");
+    mkdirSync(lock); writeFileSync(join(lock, "pid"), String(process.pid));
+    return () => rmSync(lock, { recursive: true });
+  }
+  function readyTask() { const t = store.create(spec, "orchestrator"); store.move(t.id, "ready", "user"); return t.id; }
+  it("retries repeated live-lock contention and dispatches exactly once after its owner releases it", async () => {
+    const id = readyTask(), before = store.read(), release = holdBoardLock();
+    const tick = vi.spyOn(controller, "tick");
+    try {
+      expect(() => store.change(() => {})).toThrow(KanbanBoardBusyError);
+      expect(() => store.change(() => {})).toThrow("Kanban board is busy; retry the operation");
+      controller.start(); controller.start();
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await vi.advanceTimersByTimeAsync(750);
+        expect(tick).toHaveBeenCalledTimes(attempt);
+        expect(jobs).toHaveLength(0);
+        expect(store.read()).toEqual(before);
+        expect(readFileSync(join(store.directory, "write.lock", "pid"), "utf8")).toBe(String(process.pid));
+        expect(notify).not.toHaveBeenCalled();
+      }
+    } finally { release(); }
+    await vi.advanceTimersByTimeAsync(750);
+    expect(jobs).toHaveLength(1);
+    expect(task(id)).toMatchObject({ column: "in progress", runs: 1, lease: { owner: controller.owner } });
+    await vi.advanceTimersByTimeAsync(2250);
+    expect(tick).toHaveBeenCalledTimes(7);
+    expect(jobs).toHaveLength(1); expect(task(id).runs).toBe(1);
+    expect(notify).not.toHaveBeenCalled();
+  });
+  function contendAfterClaim(setupError?: Error) {
+    const claim = store.claim.bind(store);
+    let unlock!: () => void;
+    const claimed = vi.spyOn(store, "claim").mockImplementationOnce((...args) => {
+      const lease = claim(...args);
+      unlock = holdBoardLock();
+      if (setupError) vi.spyOn(store, "change").mockImplementationOnce(() => { throw setupError; });
+      return lease;
+    });
+    return { claimed, unlock: () => unlock() };
+  }
+  it.each([undefined, new Error("Snapshot metadata preparation failed")])("retains failed setup cleanup after a successful claim and recovers without redispatch: %s", async setupError => {
+    const id = readyTask(), contention = contendAfterClaim(setupError);
+    const original = String(setupError ?? new KanbanBoardBusyError());
+    const release = vi.spyOn(store, "release");
+    controller.start();
+    try {
+      await vi.advanceTimersByTimeAsync(750);
+      const lease = task(id).lease!;
+      expect(lease).toMatchObject({ owner: controller.owner, pid: process.pid });
+      expect(task(id).executionLease?.token).toBe(lease.token);
+      expect(jobs).toHaveLength(0);
+      expect(release).toHaveBeenLastCalledWith(id, lease, original, true);
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining(original));
+      expect(notify).toHaveBeenCalledWith(expect.stringContaining("lease cleanup pending"));
+      await vi.advanceTimersByTimeAsync(2250);
+      expect(release).toHaveBeenCalledTimes(4);
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(task(id).lease?.token).toBe(lease.token);
+      expect(task(id).executionLease?.token).toBe(lease.token);
+      expect(readFileSync(join(store.directory, "write.lock", "pid"), "utf8")).toBe(String(process.pid));
+      expect(contention.claimed).toHaveBeenCalledTimes(1);
+    } finally { contention.unlock(); }
+    await vi.advanceTimersByTimeAsync(750);
+    expect(task(id).lease).toBeUndefined(); expect(task(id).executionLease).toBeUndefined();
+    expect(task(id).blocked).toBe(original);
+    expect(task(id).workerStatus).toMatchObject({ state: "error", reason: original });
+    expect(task(id).history).toContainEqual(expect.objectContaining({ event: "worker stopped", data: original }));
+    await vi.advanceTimersByTimeAsync(2250);
+    expect(task(id).runs).toBe(1); expect(contention.claimed).toHaveBeenCalledTimes(1);
+    expect(jobs).toHaveLength(0); expect(stop).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("close recovers pending setup cleanup and retains its diagnostic (first close contends: %s)", async closeWhileLocked => {
+    const original = new Error("Snapshot metadata preparation failed during shutdown");
+    const id = readyTask(), contention = contendAfterClaim(original);
+    const tick = vi.spyOn(controller, "tick");
+    controller.start();
+    try {
+      await vi.advanceTimersByTimeAsync(750);
+      if (closeWhileLocked) {
+        await expect(controller.close()).rejects.toThrow(/cleanup needs attention.*Snapshot metadata preparation failed during shutdown.*Kanban board is busy/);
+        expect(task(id).lease).toBeDefined(); expect(task(id).executionLease).toBeDefined();
+        expect(readFileSync(join(store.directory, "write.lock", "pid"), "utf8")).toBe(String(process.pid));
+      }
+    } finally { contention.unlock(); }
+    await controller.close();
+    expect(task(id).blocked).toBe(String(original));
+    expect(task(id).workerStatus?.reason).toBe(String(original));
+    expect(task(id).lease).toBeUndefined(); expect(task(id).executionLease).toBeUndefined();
+    controller.start(); await vi.advanceTimersByTimeAsync(3000);
+    expect(tick).toHaveBeenCalledTimes(1);
+    expect(contention.claimed).toHaveBeenCalledTimes(1); expect(task(id).runs).toBe(1);
+    expect(jobs).toHaveLength(0); expect(stop).not.toHaveBeenCalled();
+  });
+  it.each(["Unexpected storage failure", "Kanban board is busy; retry the operation"])("pauses future polls for a generic Error: %s", async message => {
+    const id = readyTask();
+    const read = vi.spyOn(store, "read").mockImplementationOnce(() => { throw new Error(message); });
+    const tick = vi.spyOn(controller, "tick");
+    controller.start();
+    await vi.advanceTimersByTimeAsync(750);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledExactlyOnceWith(`Kanban dispatch paused after an error: Error: ${message}`);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(tick).toHaveBeenCalledTimes(1); expect(read).toHaveBeenCalledTimes(1);
+    expect(jobs).toHaveLength(0); expect(task(id).runs).toBe(0);
+  });
+  it("close prevents further contention retries or restart even after the fixture lock is released", async () => {
+    const id = readyTask(), release = holdBoardLock();
+    const tick = vi.spyOn(controller, "tick");
+    try {
+      controller.start();
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(tick).toHaveBeenCalledTimes(2);
+      await controller.close();
+      expect(readFileSync(join(store.directory, "write.lock", "pid"), "utf8")).toBe(String(process.pid));
+      await vi.advanceTimersByTimeAsync(2250);
+      expect(tick).toHaveBeenCalledTimes(2);
+    } finally { release(); }
+    controller.start();
+    await vi.advanceTimersByTimeAsync(2250);
+    expect(tick).toHaveBeenCalledTimes(2);
+    await controller.tick();
+    expect(jobs).toHaveLength(0); expect(task(id).runs).toBe(0);
+    expect(notify).not.toHaveBeenCalled();
+  });
+});
 describe("Kanban role dispatch and evidence", () => {
   it("propagates the persisted identity into role prompts and tool responses", async () => {
     const id = await start(), binding = jobs[0].binding, identity = task(id).workers?.operator;

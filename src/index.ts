@@ -481,7 +481,7 @@ export default function (pi: ExtensionAPI) {
       content: message.content,
       display: true,
       details: message.details,
-    }, { deliverAs: "steer", triggerTurn: true }),
+    }, { deliverAs: "followUp", triggerTurn: true }),
     () => currentCtx?.signal !== undefined,
   );
   // A queued result wait must observe completion before its held notification
@@ -1618,7 +1618,7 @@ export default function (pi: ExtensionAPI) {
         stop: id => { const workflow = workflowTasks.get(id); if (workflow) workflow.abortController.abort(); else manager.abort(id); },
         steer: (id, message) => { manager.steer(id, message); },
         validAgent: type => { const resolution = resolveSpawnType(type); return resolution.ok && !resolution.fellBackFrom && !!getAgentConfig(resolution.type); },
-        notify: message => pi.sendMessage({ customType: "kanban-update", content: message, display: true }, { triggerTurn: true, deliverAs: "followUp" }),
+        notify: message => pi.sendMessage({ customType: "kanban-update", content: message, display: true }, { triggerTurn: false, deliverAs: "followUp" }),
       });
       pi.registerTool(kanban.orchestratorTool());
       kanban.start();

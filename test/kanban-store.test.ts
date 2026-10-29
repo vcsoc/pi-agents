@@ -18,6 +18,21 @@ function reviewerDone(id: string) { const lease = testerDone(id); store.evaluate
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "pi-kanban-store-")); cwd = join(root, "project"); mkdirSync(cwd); store = new KanbanStore(cwd, join(root, "state")); });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
 describe("persistent project Kanban", () => {
+  it("resumes a stopped tester without resetting its revision or evidence", () => {
+    const t = create(), lease = operatorDone(t.id);
+    evidence(t.id, lease);
+    store.release(t.id, lease, "Turn limit checkpoint", true);
+    const before = current(t.id);
+    store.move(t.id, "ready", "orchestrator");
+    const resumed = current(t.id);
+    expect(resumed.phase).toBe("tester");
+    expect(resumed.column).toBe("review");
+    expect(resumed.revision).toBe(before.revision);
+    expect(resumed.tests).toEqual(before.tests);
+    expect(resumed.fingerprint).toBe(hash);
+    expect(resumed.blocked).toBeUndefined();
+    expect(store.claim(t.id, "resumed").role).toBe("tester");
+  });
   it("uses a canonical folder hash and project name", () => {
     const alias = join(root, "alias"); symlinkSync(cwd, alias, "dir");
     expect(projectIdentity(alias)).toEqual(projectIdentity(cwd));

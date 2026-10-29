@@ -161,7 +161,7 @@ describe("background completion steering scheduling", () => {
     run = await runPromise;
 
     expect(toolSignalAtCompletion?.aborted).toBe(false);
-    expect(completionVisibleByParentCall[1]).toBe(true);
+    expect(completionVisibleByParentCall.some(Boolean)).toBe(true);
     expect(parentModelCalls).toBeGreaterThanOrEqual(2);
     expect(childModelCalls).toBe(1);
   });
@@ -203,7 +203,7 @@ describe("background completion steering scheduling", () => {
             { type: "toolCall" as const, id: "blocking-call", name: "blocking_tool", arguments: {} },
           ];
         }
-        completionMessagesAtSecondCall ??= context.messages.flatMap((message) =>
+        completionMessagesAtSecondCall = context.messages.flatMap((message) =>
           message.role === "user"
             ? message.content.flatMap((block) =>
               block.type === "text" && block.text.includes(COMPLETION_MARKER) ? [block.text] : [])
