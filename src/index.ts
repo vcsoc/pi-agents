@@ -28,6 +28,7 @@ import { CompletionOutbox, NOTIFICATION_HOLD_MS } from "./completion-outbox.js";
 import { type RpcHandle, registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
 import { runAgentsDemo } from "./demo.js";
+import { DemoBoard } from "./demo-board.js";
 import { GroupJoinManager } from "./group-join.js";
 import { isolationParam, resolveAgentInvocationConfig, resolveJoinMode } from "./invocation-config.js";
 import { KANBAN_GUIDELINES, KanbanController } from "./kanban/controller.js";
@@ -408,6 +409,7 @@ export default function (pi: ExtensionAPI) {
   let kanbanEnabled = false;
   let kanban: KanbanController | undefined;
   let kanbanWeb: KanbanWebServer | undefined;
+  let demoWeb: KanbanWebServer | undefined;
   let kanbanWebGeneration = 0;
 
   // Seed the package gates from the same merged settings, before the first load
@@ -1578,9 +1580,9 @@ export default function (pi: ExtensionAPI) {
 
   // Apply persisted settings on startup and emit `subagents:settings_loaded`.
   async function stopKanban() {
-    const controller = kanban, web = kanbanWeb;
-    kanban = undefined; kanbanWeb = undefined; kanbanWebGeneration++;
-    const results = await Promise.allSettled([controller?.close(), web?.close()]);
+    const controller = kanban, web = kanbanWeb, demo = demoWeb;
+    kanban = undefined; kanbanWeb = undefined; demoWeb = undefined; kanbanWebGeneration++;
+    const results = await Promise.allSettled([controller?.close(), web?.close(), demo?.close()]);
     for (const result of results) if (result.status === "rejected") currentCtx?.ui.notify(`Kanban cleanup: ${String(result.reason)}`, "warning");
   }
 
@@ -1590,9 +1592,10 @@ export default function (pi: ExtensionAPI) {
     kanbanWebGeneration++;
     if (!enabled) {
       // The web interface does not own harness execution or task capabilities.
-      const web = kanbanWeb;
-      kanbanWeb = undefined;
+      const web = kanbanWeb, demo = demoWeb;
+      kanbanWeb = undefined; demoWeb = undefined;
       void web?.close().catch(error => currentCtx?.ui.notify(String(error), "error"));
+      void demo?.close().catch(error => currentCtx?.ui.notify(String(error), "error"));
     }
   }
 
@@ -4388,27 +4391,30 @@ Write the file using the write tool. Only write the file, nothing else.`;
         if (demoRunning) { ctx.ui.notify("An agents demo is already running.", "warning"); return; }
         demoRunning = true;
         const started = performance.now();
+        const demoBoard = kanbanEnabled ? new DemoBoard() : undefined;
         try {
-          if (kanbanEnabled) {
-            const controller = ensureKanban(ctx);
+          if (demoBoard) {
             const generation = kanbanWebGeneration;
-            if (!kanbanWeb) {
-              const opened = await startKanbanServer(controller);
-              if (!kanbanEnabled || generation !== kanbanWebGeneration) await opened.close();
-              else if (kanbanWeb) await opened.close();
-              else kanbanWeb = opened;
-            }
-            if (kanbanEnabled && kanbanWeb) {
+            const previous = demoWeb;
+            demoWeb = undefined;
+            await previous?.close();
+            const opened = await startKanbanServer(demoBoard);
+            if (!kanbanEnabled || generation !== kanbanWebGeneration) await opened.close();
+            else {
+              demoWeb = opened;
               const launcher = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open";
-              const browser = spawnBrowser(launcher, [kanbanWeb.url], { detached: true, stdio: "ignore" });
-              browser.on("error", () => ctx.ui.notify(`Open demo board: ${kanbanWeb?.url}`, "info"));
+              const browser = spawnBrowser(launcher, [opened.url], { detached: true, stdio: "ignore" });
+              browser.on("error", () => ctx.ui.notify(`Open virtual demo board: ${opened.url}`, "info"));
               browser.unref();
-              ctx.ui.notify(`Demo live harness runs: ${kanbanWeb.url}`, "info");
+              ctx.ui.notify(`Virtual agents demo board: ${opened.url}`, "info");
             }
           }
           const result = await runAgentsDemo({
             signal: ctx.signal,
-            report: message => ctx.ui.notify(message, "info"),
+            report: message => {
+              if (message.endsWith(": running")) demoBoard?.update(message.slice(0, -9), "running");
+              ctx.ui.notify(message, "info");
+            },
             run: async (name, prompt, signal) => {
               const { record } = await manager.spawnAndWait(pi, ctx, "operate", prompt, {
                 description: name, isolated: true, inheritContext: false, thinkingLevel: "minimal", maxTurns: 2, signal,
@@ -4422,13 +4428,15 @@ Write the file using the write tool. Only write the file, nothing else.`;
                 },
               });
               record.resultConsumed = true;
+              if (record.status === "completed" && !signal.aborted) demoBoard?.update(name, "completed", record.result);
               return { status: record.status, result: record.result };
             },
           }, Math.max(1, 30_000 - (performance.now() - started)));
           const message = `${result.message} Elapsed ${(result.elapsedMs / 1000).toFixed(1)}s.`;
+          demoBoard?.finish(result.passed, message);
           pi.sendMessage({ customType: "agents-demo", content: message, display: true }, { triggerTurn: false });
           ctx.ui.notify(message, result.passed ? "info" : "warning");
-        } catch (error) { ctx.ui.notify(`Demo failed: ${String(error)}`, "error"); }
+        } catch (error) { demoBoard?.finish(false, String(error)); ctx.ui.notify(`Demo failed: ${String(error)}`, "error"); }
         finally { demoRunning = false; }
         return;
       }

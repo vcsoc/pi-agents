@@ -6,7 +6,8 @@ import { type NewTask, text } from "./store.js";
 import { KANBAN_HTML, KANBAN_SCRIPT } from "./web.js";
 
 export interface KanbanWebServer { url: string; close: () => Promise<void> }
-export async function startKanbanServer(controller: KanbanController): Promise<KanbanWebServer> {
+export interface ReadOnlyKanbanSource { readOnly: true; view: KanbanController["view"] }
+export async function startKanbanServer(controller: KanbanController | ReadOnlyKanbanSource): Promise<KanbanWebServer> {
   const token = randomBytes(32).toString("hex");
   const listeners = new Set<ServerResponse>();
   let origin = "", previous = "";
@@ -36,6 +37,7 @@ export async function startKanbanServer(controller: KanbanController): Promise<K
         req.on("close", () => listeners.delete(res)); return;
       }
       if (req.method !== "POST" || url.pathname !== "/api/action") { send(res, 404, { error: "Not found" }); return; }
+      if ("readOnly" in controller) { send(res, 403, { error: "Virtual demo board is read-only; it cannot dispatch or change real tasks" }); return; }
       if (!(req.headers["content-type"] ?? "").startsWith("application/json")) { send(res, 415, { error: "JSON required" }); return; }
       let size = 0; const chunks: Buffer[] = [];
       for await (const part of req) {
