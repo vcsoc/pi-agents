@@ -211,6 +211,12 @@ describe("formatFleetTokens", () => {
 });
 
 describe("FleetList navigation", () => {
+  it("renders the durable Kanban first name without replacing the canonical agent type", () => {
+    const record = makeRecord({ workerIdentity: { id: "worker", name: "Ada", role: "operator", definition: "operate" } });
+    const h = harness([record]);
+    const rendered = h.render(160).map(plain).join("\n");
+    expect(rendered).toContain("Ada /"); expect(record.type).toBe("operate");
+  });
   it("does not register a widget when there are no agents", () => {
     const h = harness([]);
     expect(h.render()).toEqual([]);

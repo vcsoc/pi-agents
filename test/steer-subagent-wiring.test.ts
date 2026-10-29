@@ -174,3 +174,10 @@ describe("steer_subagent once the session exists", () => {
     await lifecycle.get("session_shutdown")?.();
   });
 });
+
+// Default-mode wiring must not consume personal/project Kanban settings.
+vi.mock("../src/settings.js", async () => ({
+  ...await vi.importActual<typeof import("../src/settings.js")>("../src/settings.js"),
+  loadSettings: () => ({}),
+  applyAndEmitLoaded: () => ({}),
+}));

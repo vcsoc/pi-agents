@@ -40,6 +40,20 @@ describe("AgentManager Kanban capabilities", () => {
   let manager: AgentManager;
   afterEach(() => manager?.dispose());
 
+  it("retains the same named identity through manager records and completion notifications", async () => {
+    let completed: AgentRecord | undefined;
+    manager = new AgentManager(record => { completed = record; }); resolvedRun();
+    const identity = { id: "durable-worker-id", name: "Ada", role: "operator" as const, definition: "operate" };
+    const binding = { identity, prompt: "Your name is Ada", tool: {} as any, assertAllowed: () => {} };
+    const id = manager.spawn(mockPi, mockCtx, "operate", binding.prompt, { description: "Validate inputs", kanban: binding });
+    const record = manager.getRecord(id)!;
+    expect(record.workerIdentity).toEqual(identity); expect(record.type).toBe("operate");
+    expect(record.description).toBe("Ada: Validate inputs");
+    await record.promise;
+    expect(completed?.workerIdentity).toEqual(identity);
+    expect(completed?.description).toContain("Ada");
+    expect(vi.mocked(runAgent).mock.calls.at(-1)?.[3].kanban?.identity).toEqual(identity);
+  });
   it("rejects untracked spawns before running a worker", () => {
     manager = new AgentManager();
     manager.setSpawnGuard(binding => { if (!binding) throw new Error("Create a Kanban task first"); });

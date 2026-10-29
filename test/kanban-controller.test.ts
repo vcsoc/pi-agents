@@ -33,10 +33,35 @@ beforeEach(() => {
 });
 afterEach(async () => { await controller.close(); rmSync(root, { recursive: true, force: true }); });
 describe("Kanban role dispatch and evidence", () => {
+  it("propagates the persisted identity into role prompts and tool responses", async () => {
+    const id = await start(), binding = jobs[0].binding, identity = task(id).workers?.operator;
+    expect(binding.identity).toEqual(identity); expect(binding.prompt).toContain(`Your name is ${identity?.name}`);
+    expect(binding.prompt).toContain("concise comment summary");
+    const response = await call(binding, { action: "get" });
+    expect((response.details as any).workers.operator).toEqual(identity);
+    await call(binding, { action: "comment", summary: "Verified inputs", details: "Full untruncated evidence\n".repeat(1000) });
+    expect(task(id).comments[0]).toMatchObject({ summary: "Verified inputs", identity, author: identity?.name });
+    expect(task(id).comments[0].details).toHaveLength(26000);
+  });
+  it("reports explicit dependencies/user waits/stuck with reason, identity and timestamps", async () => {
+    const id = await start(), binding = jobs[0].binding;
+    await expect(call(binding, { action: "status", state: "waiting_dependency", notes: "Waiting for independent tests" })).rejects.toThrow(/dependencyId/);
+    for (const state of ["waiting_dependency", "waiting_user", "stuck", "working", "thinking", "idle"]) {
+      await call(binding, { action: "status", state, notes: `Explicit ${state}`, dependencyId: state === "waiting_dependency" ? "test-task-id" : undefined });
+      expect(task(id).workerStatus).toMatchObject({ state, reason: `Explicit ${state}`, identity: binding.identity });
+      expect(Date.parse(task(id).workerStatus!.since)).not.toBeNaN();
+      expect(Date.parse(task(id).workerStatus!.updatedAt)).not.toBeNaN();
+    }
+    await call(binding, { action: "handoff", notes: "Ready for independent testing" });
+    expect(task(id).workerStatus?.state).toBe("finished");
+    binding.observe?.("worker turn started", null, "working");
+    expect(task(id).workerStatus?.state).toBe("finished");
+    await expect(call(binding, { action: "status", state: "working", notes: "stale report" })).rejects.toThrow();
+  });
   it("does not dispatch backlog tasks", async () => { store.create(spec, "orchestrator"); await controller.tick(); expect(jobs).toHaveLength(0); });
   it("dispatches only released work, with a role-bound tool", async () => { const id = await start(); expect(jobs).toHaveLength(1); expect(jobs[0].binding.prompt).toContain("operator"); expect(jobs[0].binding.tool.name).toBe("KanbanTask"); expect(task(id).column).toBe("in progress"); });
   it("prevents the assigned agent from spawning unrelated agents", async () => { await start(); expect(() => jobs[0].binding.assertAllowed("Agent")).toThrow(/delegate/); expect(() => jobs[0].binding.assertAllowed("SubagentWorkflow")).toThrow(); });
-  it("stops an archived worker and blocks every subsequent tool", async () => { const id = await start(); store.archive(id, "user"); await controller.tick(); expect(jobs[0].signal.aborted).toBe(true); expect(stop).toHaveBeenCalled(); expect(() => jobs[0].binding.assertAllowed("bash")).toThrow(/archived/); await expect(call(jobs[0].binding, { action: "comment", notes: "Too late" })).rejects.toThrow(); });
+  it("rejects archive on an active worker; backlog is cancellation", async () => { const id = await start(); expect(() => store.archive(id, "user")).toThrow(/Only Done/); expect(jobs[0].signal.aborted).toBe(false); store.move(id, "backlog", "user"); await controller.tick(); expect(jobs[0].signal.aborted).toBe(true); expect(stop).toHaveBeenCalled(); expect(() => jobs[0].binding.assertAllowed("bash")).toThrow(/paused/); await expect(call(jobs[0].binding, { action: "comment", notes: "Too late" })).rejects.toThrow(); });
   it("moving to backlog cancels the worker and invalidates the old generation", async () => { const id = await start(); store.move(id, "backlog", "user"); await controller.tick(); expect(jobs[0].signal.aborted).toBe(true); await expect(call(jobs[0].binding, { action: "handoff", notes: "Stale work" })).rejects.toThrow(); });
   it("routes user comments into the active assigned worker", async () => { const id = await start(); store.comment(id, "Also cover an empty password", "user"); await controller.tick(); expect(steer).toHaveBeenCalledWith("0", expect.stringContaining("empty password")); await controller.tick(); expect(steer).toHaveBeenCalledTimes(1); });
   it("blocks agents ending without a handoff rather than retrying forever", async () => { const id = await start(); await finish(0); expect(task(id).blocked).toContain("without a valid handoff"); await controller.tick(); expect(jobs).toHaveLength(1); });
@@ -44,7 +69,8 @@ describe("Kanban role dispatch and evidence", () => {
     const id = await start();
     await call(jobs[0].binding, { action: "handoff", notes: "Implemented input validation" }); await finish(0);
     expect(jobs[1].binding.prompt).toContain("tester");
-    await call(jobs[1].binding, { action: "test", command: "npm test" }); expect(run).toHaveBeenCalledWith("bash", ["-lc", "npm test"], cwd, expect.anything());
+    await call(jobs[1].binding, { action: "test", command: "npm test" }); expect(run).toHaveBeenCalledWith("bash", ["-lc", "npm test"], jobs[1].cwd, expect.anything());
+    expect(jobs[1].cwd).toBe(jobs[0].cwd); expect(jobs[1].cwd).not.toBe(cwd);
     await call(jobs[1].binding, { action: "evaluate", scores: [90], notes: "Tested invalid, empty, and valid inputs" });
     await call(jobs[1].binding, { action: "handoff", notes: "Testing passed" }); await finish(1);
     expect(jobs[2].binding.prompt).toContain("reviewer");
@@ -57,8 +83,8 @@ describe("Kanban role dispatch and evidence", () => {
     expect(task(id).column).toBe("done"); expect(task(id).tests[0].exitCode).toBe(0); expect(Object.keys(task(id).evaluations)).toHaveLength(3);
     expect(task(id).evaluations.tester?.actor).not.toBe(task(id).evaluations.reviewer?.actor);
   });
-  it("detects source changes after operator submission", async () => { const id = await start(); await call(jobs[0].binding, { action: "handoff", notes: "Implemented" }); await finish(0); writeFileSync(join(cwd, "app.ts"), "changed"); await expect(call(jobs[1].binding, { action: "test", command: "npm test" })).rejects.toThrow(/changed/); expect(task(id).tests).toHaveLength(0); });
-  it("detects a test command that mutates submitted source", async () => { const id = await start(); await call(jobs[0].binding, { action: "handoff", notes: "Implemented" }); await finish(0); run.mockImplementation(async file => { if (file === "bash") writeFileSync(join(cwd, "app.ts"), "mutated by test"); return { code: file === "git" ? 1 : 0, stdout: "Pass", stderr: "" }; }); await expect(call(jobs[1].binding, { action: "test", command: "bad-test" })).rejects.toThrow(/changed project source/); expect(task(id).tests).toHaveLength(0); });
+  it("detects source changes after operator submission", async () => { const id = await start(); await call(jobs[0].binding, { action: "handoff", notes: "Implemented" }); await finish(0); writeFileSync(join(jobs[1].cwd, "app.ts"), "changed"); await expect(call(jobs[1].binding, { action: "test", command: "npm test" })).rejects.toThrow(/changed/); expect(task(id).tests).toHaveLength(0); });
+  it("detects a test command that mutates submitted source", async () => { const id = await start(); await call(jobs[0].binding, { action: "handoff", notes: "Implemented" }); await finish(0); run.mockImplementation(async file => { if (file === "bash") writeFileSync(join(jobs[1].cwd, "app.ts"), "mutated by test"); return { code: file === "git" ? 1 : 0, stdout: "Pass", stderr: "" }; }); await expect(call(jobs[1].binding, { action: "test", command: "bad-test" })).rejects.toThrow(/changed project source/); expect(task(id).tests).toHaveLength(0); });
   it("does not create an orchestrator notification loop when the orchestrator replies", async () => {
     const id = await start(); await finish(0);
     const count = notify.mock.calls.length;
@@ -69,7 +95,7 @@ describe("Kanban role dispatch and evidence", () => {
   });
   it("does not let an operator certify its own tests", async () => { await start(); await expect(call(jobs[0].binding, { action: "test", command: "true" })).rejects.toThrow(/Only the tester/); });
   it("attaches a direct tool-call gate while preserving the prior hook", async () => {
-    const prior = vi.fn(); const session = { agent: { beforeToolCall: prior } } as never;
+    const prior = vi.fn(); const session = { subscribe: vi.fn(), agent: { beforeToolCall: prior } } as never;
     const binding = { assertAllowed: (name: string) => { if (name === "bash") throw new Error("paused"); } } as KanbanBinding;
     bindKanbanGate(session, binding);
     const hook = (session as any).agent.beforeToolCall;

@@ -283,6 +283,8 @@ Default agents can be **ejected** (`/agents` → select agent → Eject) to expo
 
 ## Project Kanban (Opt-In)
 
+**The native Pi harness always owns execution.** Kanban is an optional live interface over the same harness task service, not a replacement mode. Agent, workflows, ordinary tools, results and steering remain available with it on or off. Toggling it never stops agents or discards their sessions. The native `Kanban` task tool and `/agents tasks` work without the web interface in trusted projects.
+
 Enable **Kanban** in `/agents` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`), then run:
 
 ```text
@@ -291,7 +293,9 @@ Enable **Kanban** in `/agents` -> Settings (or set `"kanbanEnabled": true` in `s
 
 The browser board shows **backlog**, **ready**, **in progress**, **review**, and **done**, with live updates. The orchestrator creates a task for each work scope, assigns its operator, defines a weighted rubric, and releases it to ready. Separate tester and reviewer sessions evaluate the submitted work; the orchestrator independently scores it before completion. Every role must score at least **85%**, and real passing test-command evidence is required. A lower score returns actionable fix comments to the operator.
 
-Click a task for its scope, rubric, scores, test output, comments, PR, and history. Comments steer active workers; completed tasks can receive read-only responses. Drag a task to backlog to stop and edit it, then release it to ready to resume. Only you can release a task you paused. Right-click a card to archive and cancel future work, or archive the completed scope when every active task is done. Archiving does not undo edits or delete history.
+Use **Add task** to submit a scoped Backlog item for the harness orchestrator to review and delegate. **Live Harness Runs** also shows ordinary native agents/workflows in the current Pi session. **Pause run** and **Pause all work** explicitly cancel current runs; pause-all also holds pending tasks and stops local scheduling. Native equivalents are `/agents tasks pause <run-id>` and `/agents tasks pause-all`. Resume work deliberately; turning the interface back on does not resume paused items.
+
+Click a task for its scope, rubric, scores, test output, comments, PR, and history. Comments steer active workers; completed tasks can receive read-only responses. Drag a task to backlog to stop and edit it, then release it to ready to resume. Only you can release a task you paused. Right-click a Done card to archive it, or archive the completed scope when every active task is done. Unfinished work must be paused, not archived. Archiving does not undo edits or delete history.
 
 Boards are named after the project folder and identified by its canonical-path SHA-256 hash. They persist outside the project in `~/.pi/agent/kanban/` (or your configured Pi agent directory). The local web server uses a private URL token and listens only on loopback.
 
@@ -739,7 +743,7 @@ Most changes apply to new agents immediately. Options that change which tools or
 | `showModel` | `false` | Add model and reasoning level to the widget. Results and the viewer already show these. |
 | `viewerMarkdown` | `assistant` | `off`: plain text. `assistant`: format replies only. `all`: format tool results too; this can change how logs/diffs look. Press `m` in the viewer to switch. |
 | `fleetView` | `true` | Show the selectable main-chat/agent list below the editor. |
-| `kanbanEnabled` | `false` | Enable the persistent project Kanban board and automatic task workers. Open `/agents kban`; completion requires real tests and three independent rubric scores of at least 85%. Enabling stops untracked agents; disabling stops board workers. |
+| `kanbanEnabled` | `false` | Enable the optional live web interface at `/agents kban`. Native tools, task planning and execution remain available on or off; toggling never cancels work. Managed-task completion still requires recorded tests and three independent scores of at least 85%. |
 | `widgetMode` | `background` | `all`: every agent. `background`: background only. `off`: no progress widget. |
 | `toolDescriptionMode` | `full` | `full`: detailed Agent help. `compact`: shorter help for smaller models. `custom`: your own help file. Applies next session. |
 

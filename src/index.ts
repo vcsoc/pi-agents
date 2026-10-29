@@ -407,6 +407,7 @@ export default function (pi: ExtensionAPI) {
   let kanbanEnabled = false;
   let kanban: KanbanController | undefined;
   let kanbanWeb: KanbanWebServer | undefined;
+  let kanbanWebGeneration = 0;
 
   // Seed the package gates from the same merged settings, before the first load
   // below reads them. `applyAndEmitLoaded` sets them again through the appliers;
@@ -1577,7 +1578,7 @@ export default function (pi: ExtensionAPI) {
   // Apply persisted settings on startup and emit `subagents:settings_loaded`.
   async function stopKanban() {
     const controller = kanban, web = kanbanWeb;
-    kanban = undefined; kanbanWeb = undefined;
+    kanban = undefined; kanbanWeb = undefined; kanbanWebGeneration++;
     const results = await Promise.allSettled([controller?.close(), web?.close()]);
     for (const result of results) if (result.status === "rejected") currentCtx?.ui.notify(`Kanban cleanup: ${String(result.reason)}`, "warning");
   }
@@ -1585,15 +1586,16 @@ export default function (pi: ExtensionAPI) {
   function setKanbanEnabled(enabled: boolean) {
     if (enabled === kanbanEnabled) return;
     kanbanEnabled = enabled;
-    if (enabled) manager.abortAll();
-    else {
-      if (kanban) pi.registerTool({ ...kanban.orchestratorTool(), exposure: "hidden" });
-      void stopKanban().catch(error => currentCtx?.ui.notify(String(error), "error"));
+    kanbanWebGeneration++;
+    if (!enabled) {
+      // The web interface does not own harness execution or task capabilities.
+      const web = kanbanWeb;
+      kanbanWeb = undefined;
+      void web?.close().catch(error => currentCtx?.ui.notify(String(error), "error"));
     }
   }
 
   function ensureKanban(ctx: ExtensionContext): KanbanController {
-    if (!kanbanEnabled) throw new Error("Kanban is off. Enable Kanban in /agents > Settings first.");
     if (!ctx.isProjectTrusted()) throw new Error("Kanban workers require a trusted project.");
     if (!kanban) {
       const store = new KanbanStore(ctx.cwd, join(getAgentDir(), "kanban"));
@@ -1603,7 +1605,17 @@ export default function (pi: ExtensionAPI) {
           kanban: binding, cwd, configCwd: ctx.cwd, isBackground: true, signal, maxTurns: 40,
         }),
         record: id => manager.getRecord(id),
-        stop: id => { manager.abort(id); },
+        runs: () => [
+          ...manager.listAgents().filter(isTopLevelAgent).map(record => ({ id: record.id, name: record.workerIdentity?.name ?? record.alias ?? record.handle ?? record.type, status: record.status, description: record.description })),
+          ...[...workflowTasks.values()].map(task => ({ id: task.id, name: task.workflowName ?? task.id, status: task.status === "failed" ? "error" as const : task.status === "killed" ? "stopped" as const : task.status, description: "Native workflow" })),
+        ],
+        pauseAll: () => {
+          scheduler.stop();
+          for (const task of workflowTasks.values()) task.abortController.abort();
+          manager.abortAll();
+        },
+        capacity: () => manager.getBackgroundCapacity(),
+        stop: id => { const workflow = workflowTasks.get(id); if (workflow) workflow.abortController.abort(); else manager.abort(id); },
         steer: (id, message) => { manager.steer(id, message); },
         validAgent: type => { const resolution = resolveSpawnType(type); return resolution.ok && !resolution.fellBackFrom && !!getAgentConfig(resolution.type); },
         notify: message => pi.sendMessage({ customType: "kanban-update", content: message, display: true }, { triggerTurn: true, deliverAs: "followUp" }),
@@ -1615,19 +1627,14 @@ export default function (pi: ExtensionAPI) {
   }
 
   manager.setSpawnGuard(binding => {
-    if (kanbanEnabled && !binding) throw new Error("Kanban is enabled: create and release a board task instead of starting untracked work.");
     binding?.assertAllowed("KanbanTask");
   });
 
   pi.on("before_agent_start", (_event, ctx) => {
-    if (!kanbanEnabled) return;
-    ensureKanban(ctx);
+    if (!ctx.isProjectTrusted()) return;
+    try { ensureKanban(ctx); }
+    catch (error) { ctx.ui.notify(`Harness task service unavailable; ordinary tools remain available: ${String(error)}`, "warning"); }
     return { message: { customType: "kanban-policy", content: KANBAN_GUIDELINES, display: false } };
-  });
-  pi.on("tool_call", event => {
-    if (kanbanEnabled && !["Kanban", "read", "grep", "find", "ls", "tool_search"].includes(event.toolName)) {
-      return { block: true, reason: "Kanban is enabled. Delegate executable work through assigned ready tasks; use Kanban to manage scopes, comments, and evidence." };
-    }
   });
 
   // Global + project merged; missing → defaults; corrupt file emits a warning
@@ -4029,7 +4036,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
         {
           id: "kanbanEnabled",
           label: "Kanban",
-          description: "Project web board at /agents kban. Runs assigned operator/tester/reviewer tasks with evidence gates. Enabling stops untracked agents; disabling stops board workers.",
+          description: "Optional live web view at /agents kban. Native tools and task execution remain available with the board on or off. Turning it off closes only the web interface.",
           currentValue: kanbanEnabled ? "on" : "off",
           values: ["on", "off"],
         },
@@ -4229,7 +4236,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
         notifyApplied(ctx, `Viewer markdown set to ${value}`);
       } else if (id === "kanbanEnabled") {
         setKanbanEnabled(value === "on");
-        notifyApplied(ctx, `Kanban ${kanbanEnabled ? "enabled. Open /agents kban" : "disabled; board workers stopped"}`);
+        notifyApplied(ctx, `Kanban ${kanbanEnabled ? "enabled. Open /agents kban" : "interface disabled; harness work continues"}`);
       } else if (id === "fleetView") {
         const enabled = value === "on";
         setFleetViewEnabled(enabled);
@@ -4375,10 +4382,34 @@ Write the file using the write tool. Only write the file, nothing else.`;
   pi.registerCommand("agents", {
     description: "Manage agents",
     handler: async (args, ctx) => {
+      if (args.trim() === "tasks" || args.trim().startsWith("tasks ")) {
+        try {
+          const controller = ensureKanban(ctx);
+          const action = args.trim().slice(5).trim();
+          if (action === "pause-all") await controller.pauseAll();
+          else if (action.startsWith("pause ")) await controller.pauseAgent(action.slice(6).trim());
+          else if (action) throw new Error("Use /agents tasks, /agents tasks pause <run-id>, or /agents tasks pause-all");
+          const view = controller.view();
+          ctx.ui.notify([
+            "Harness tasks (Kanban web view is optional)",
+            ...view.tasks.filter(task => !task.archived).map(task => `${task.id} / ${task.column}: ${task.title}`),
+            ...view.harnessRuns.map(run => `${run.id} / ${run.status}: ${run.name}`),
+          ].join("\n"), "info");
+        } catch (e) { ctx.ui.notify(e instanceof Error ? e.message : String(e), "error"); }
+        return;
+      }
       if (args.trim() !== "kban") { await showAgentsMenu(ctx); return; }
       try {
+        if (!kanbanEnabled) { ctx.ui.notify("Enable the optional Kanban interface in /agents > Settings first. Harness task tools remain available.", "info"); return; }
         const controller = ensureKanban(ctx);
-        kanbanWeb ??= await startKanbanServer(controller);
+        if (!kanbanWeb) {
+          const generation = kanbanWebGeneration;
+          const opened = await startKanbanServer(controller);
+          if (!kanbanEnabled || generation !== kanbanWebGeneration) { await opened.close(); return; }
+          if (kanbanWeb) await opened.close();
+          else kanbanWeb = opened;
+        }
+        if (!kanbanEnabled || !kanbanWeb) return;
         ctx.ui.notify(`Kanban: ${kanbanWeb.url}`, "info");
         const launcher = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open";
         const browser = spawnBrowser(launcher, [kanbanWeb.url], { detached: true, stdio: "ignore" });

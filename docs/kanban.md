@@ -1,6 +1,6 @@
 # Project Kanban
 
-Kanban is optional and off by default. It adds a durable project board and a task-based execution mode, not another name for the existing fleet view.
+The native Pi harness is always the operational home for pi-agents. Kanban is an optional external live view and task-control interface, off by default; it is not a replacement execution mode. Agent calls, workflows, ordinary tools, results, steering and the fleet remain available with the web interface on or off.
 
 ## Enable And Open
 
@@ -8,9 +8,11 @@ Kanban is optional and off by default. It adds a durable project board and a tas
 2. Run `/agents kban`. Pi opens a browser and also prints the private URL.
 3. Ask the main agent to break your request into scopes, assign each task, define its acceptance rubric, and release the work.
 
-You can also set `"kanbanEnabled": true` in project or personal `subagents.json` and reload Pi. Disabling Kanban closes its local server and stops its workers. Enabling it stops existing untracked agents so subsequent work uses the board. A trusted project is required.
+You can also set `"kanbanEnabled": true` in project or personal `subagents.json` and reload Pi. The setting controls only access to the web interface. Enabling it never stops native agents; disabling it closes the local server without cancelling work, revoking task bindings, replacing sessions, hiding task tools or resetting evidence. Re-enabling displays the same harness task service, without duplicate dispatch. A trusted project is required for task-service activation.
 
-The main agent becomes the orchestrator. It can inspect files and use the `Kanban` tool, but cannot implement changes through untracked bash/edit/write, normal Agent calls, or workflows while Kanban mode is on. Disable Kanban to return to ordinary orchestration. Optional tools are registered only when needed, so the default mode remains unchanged.
+The `Kanban` task tool is registered before an agent turn in trusted projects regardless of the web setting. The main agent can use it alongside ordinary tools, Agent and workflows. `/agents tasks` lists tasks and retained native runs without a browser. `/agents tasks pause <run-id>` explicitly stops one current native run, and `/agents tasks pause-all` pauses pending tasks, stops the local scheduler and cancels current native agents/workflows. These are deliberate cancellation controls, not effects of toggling the view. Paused task evidence is invalidated; existing native agent conversations can be explicitly resumed with Agent, and stopped workflows can be explicitly resumed through SubagentWorkflow. No automatic replay is promised.
+
+Live Harness Runs shows the actual retained top-level agent/workflow records in this Pi session, including ordinary non-task work. Task planning/history is durable and project-shared; native run visibility is session-local and completed native records have the fleet's normal retention limit. Native runs are not fabricated into task-certified Done cards. Managed task workers still enforce their assigned capabilities and independent evidence gates.
 
 ## Task Lifecycle
 
@@ -39,15 +41,17 @@ Tests execute with a ten-minute command timeout and record command, exit code, b
 
 ## User Controls
 
+- Add task submits a title, scope, operator and project-specific acceptance criterion to Backlog and notifies the harness orchestrator. It does not start work or accept forged scores. The orchestrator reviews/refines assignments and weighted criteria before release.
+- Live Harness Runs shows native status, with Pause run for active agents/workflows. Pause all work pauses pending managed tasks (including in other Pi sessions sharing this board) and stops current native agents/workflows and scheduling in this Pi session. It does not control unrelated native runs in other Pi processes. Resume deliberately through the harness or individual task Ready controls.
 - Click a card to open the complete task modal, including comments, independent evaluations, test results, PR link, and audit history.
 - Add a comment to steer the currently running assigned worker. It is retained for subsequent roles. Idle completed tasks can dispatch a read-only response from the assigned agent; a comment alone never authorizes implementation changes.
 - Drag a task to backlog or choose Pause in backlog to invalidate its active run and evidence. Edit its title, scope, assignment, and rubric, then save. Release to ready after editing. An orchestrator cannot silently release a task you paused.
 - Only backlog and ready accept manual column changes. Dragging straight to review/done cannot bypass testing or scoring.
-- Right-click a card and select Archive / stop, or use the modal's archive action, at any stage. Archiving is terminal: no later worker or comment response is dispatched. It retains history and does not undo existing edits, commits, or PRs.
+- Archive is available only for Done tasks, from the context menu or modal. It retains history and prevents future task/comment-response dispatch. To cancel unfinished work use Pause in backlog, not Archive. Neither action undoes filesystem edits, commits or PRs.
 - Archive completed scope becomes available when every non-archived task is done. Show archive makes historical tasks visible again. Comments can document cancellation, but never resume archived work.
 - Approve PR merge is available only for merge-policy tasks. It grants that task's reviewer permission to attempt the merge after passing gates. Scope changes/rework invalidate previous merge approval.
 
-Closing a browser tab does not stop workers. Moving work to backlog, archiving it, disabling Kanban, or ending the Pi session does. Cancellation blocks later tool calls and requests abortion of in-flight work; it cannot undo already-performed filesystem/network effects or guarantee termination of independently detached external processes.
+Closing a browser tab or disabling Kanban does not stop workers. Moving unfinished work to backlog or explicitly pausing runs requests cancellation; actual session shutdown still stops workers and releases resources. Cancellation blocks later managed-task tool calls and requests abortion of in-flight work; it cannot undo already-performed filesystem/network effects or guarantee termination of independently detached external processes.
 
 ## PR Policies And Git
 
@@ -55,7 +59,7 @@ The orchestrator chooses `prMode` from the user's request and repository instruc
 
 | Mode | Required behavior |
 | --- | --- |
-| none | Work directly in the project; no GitHub operations. |
+| none | Work in private source snapshots with conflict-checked integration; no GitHub operations. |
 | review | Tester creates/pushes a PR and records tests/scores; reviewer publishes a review and verifies required CI. Leave merge to the user/project process. |
 | merge | Same testing/review steps, plus explicit user merge approval and a verified completed merge before done. |
 
@@ -65,7 +69,7 @@ Agents normally share the same GitHub credential. The reviewer posts a comment r
 
 PR worktrees and task branches are retained for inspection/rework; archiving does not automatically remove them. In review-only mode, done means the requested PR/testing/review scope is complete, not that the branch has merged into the original checkout. Even after a remote merge, the original local checkout is not automatically pulled.
 
-Non-PR tasks share the opened project directory and are serialized through final orchestrator review to prevent overlapping task mutations. They are not isolated worktrees. Pausing a task does not revert its partial changes. PR tasks can run in their separate task worktrees concurrently subject to the normal agent concurrency pool.
+Non-PR managed tasks run in private source snapshots, subject to the configured native background pool and cross-Pi leases. Tests and all three evaluations must certify the same source fingerprint. Completion serializes integration and refuses changed caller baselines (even disjoint changes), dirty/untracked caller paths, private collisions and changed submissions; resubmit/retest instead of overwriting. Git branch/index are preserved. Recovery journals and original/displaced inodes may remain in private sibling directories even after success; inspect the reported recovery path and clean up only after editors release their descriptors. This is trusted-process isolation and synchronous failure recovery, not an OS sandbox or crash/power-loss-durable multi-file transaction. Writable same-filesystem sibling storage is required. Pausing retains snapshot evidence and does not revert edits. PR tasks use separate worktrees under the same native capacity constraints. Direct Agent/workflow work remains supported; it is not implicitly managed-task-certified and its caller-source changes can correctly cause a pending task integration conflict.
 
 ## Persistence, Budgets And Failure Recovery
 

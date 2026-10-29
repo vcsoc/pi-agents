@@ -161,6 +161,7 @@ export type MentionResolution =
 export type Pool = "background" | "foreground";
 
 export interface AgentRecord {
+  workerIdentity?: import("./kanban/store.js").WorkerIdentity;
   id: string;
   type: SubagentType;
   /**

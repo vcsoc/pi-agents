@@ -428,6 +428,9 @@ export class AgentManager {
   private queue: { id: string; pool: Pool; start: () => Promise<void>; release: () => void }[] = [];
   /** Number of currently running background agents. */
   private runningBackground = 0;
+  getBackgroundCapacity() {
+    return { limit: this.maxConcurrent, running: this.runningBackground, queued: this.queue.filter(entry => entry.pool === "background").length };
+  }
   /** Number of currently running foreground (blocking) agents. */
   private runningForeground = 0;
 
@@ -565,7 +568,11 @@ export class AgentManager {
       rootSessionId: options.rootSessionId,
     };
     this.agents.set(id, record);
-    if (options.kanban) this.taskBindings.set(record, options.kanban);
+    if (options.kanban) {
+      this.taskBindings.set(record, options.kanban);
+      record.workerIdentity = options.kanban.identity;
+      if (record.workerIdentity) record.description = `${record.workerIdentity.name}: ${record.description}`;
+    }
     // After the insert, so `takenHandles()` already counts this record's own
     // handle — a spawn named after its own type gets `inspect-2`, not a
     // duplicate `inspect` that would make resolution ambiguous.

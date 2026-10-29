@@ -229,3 +229,10 @@ describe("get_subagent_result wait:true on a queued agent", () => {
     expect(textOf(completedResult)).toContain("THE-RESULT-PAYLOAD");
   });
 });
+
+// Default-mode wiring must not consume personal/project Kanban settings.
+vi.mock("../src/settings.js", async () => ({
+  ...await vi.importActual<typeof import("../src/settings.js")>("../src/settings.js"),
+  loadSettings: () => ({}),
+  applyAndEmitLoaded: () => ({}),
+}));

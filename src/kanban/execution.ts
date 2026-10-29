@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -33,6 +33,41 @@ export async function checked(run: Command, file: string, args: string[], cwd: s
   return result.stdout.trim();
 }
 const ignored = new Set([".git", ".pi", "vault", "node_modules", "dist", "coverage", ".DS_Store"]);
+export function sourceNames(cwd: string): string[] {
+  try {
+    return execFileSync("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd, encoding: "utf8", maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] }).split("\0").filter(name => name && !name.split(/[\\/]/).some(p => ignored.has(p))).sort();
+  } catch (e) {
+    if ((e as { code?: string }).code !== "ENOENT" && !(e as { status?: number }).status) throw e;
+    const names: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (ignored.has(entry.name)) continue;
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path); else names.push(relative(cwd, path));
+        if (names.length > 20000) throw new Error("Project exceeds 20000 snapshot files");
+      }
+    };
+    walk(cwd); return names.sort();
+  }
+}
+export function sourceFingerprint(cwd: string): string {
+  return hashSource(cwd, sourceNames(cwd));
+}
+function hashSource(cwd: string, names: string[]) {
+  const hash = createHash("sha256");
+  for (const name of [...new Set(names)].sort()) {
+    if (name.split(/[\\/]/).some(p => ignored.has(p))) continue;
+    const path = join(cwd, name);
+    try {
+      const stat = lstatSync(path);
+      hash.update(name).update("\0").update(String(stat.mode)).update("\0");
+      if (stat.isSymbolicLink()) hash.update(readlinkSync(path));
+      else if (stat.isFile()) hash.update(readFileSync(path));
+    } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; else throw e; }
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
 export async function fingerprint(cwd: string, run: Command = command, signal?: AbortSignal): Promise<string> {
   const listing = await run("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd, signal);
   let names: string[];
@@ -52,20 +87,7 @@ export async function fingerprint(cwd: string, run: Command = command, signal?: 
     };
     walk(cwd);
   }
-  const hash = createHash("sha256");
-  for (const name of [...new Set(names)].sort()) {
-    if (name.split(/[\\/]/).some(p => ignored.has(p))) continue;
-    const path = join(cwd, name);
-    hash.update(name).update("\0");
-    try {
-      const stat = lstatSync(path);
-      hash.update(String(stat.mode)).update("\0");
-      if (stat.isSymbolicLink()) hash.update(readlinkSync(path));
-      else if (stat.isFile()) hash.update(readFileSync(path));
-    } catch (e) { if ((e as NodeJS.ErrnoException).code === "ENOENT") hash.update("<deleted>"); else throw e; }
-    hash.update("\0");
-  }
-  return hash.digest("hex");
+  return hashSource(cwd, names);
 }
 export function prBody(t: Task): string {
   const clip = (s: string, limit: number) => s.length <= limit ? s : s.slice(0, limit) + "\n[Truncated; full evidence is retained in the Kanban task.]";

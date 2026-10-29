@@ -31,6 +31,58 @@ describe("loopback-only authenticated Kanban web server", () => {
     });
     expect(status).toBe(403);
   });
+  it("exposes summary/details comments and safe bounded activity in board and SSE snapshots", async () => {
+    const task = store.create(input, "orchestrator"), details = "Full detailed evidence\n".repeat(1000);
+    const response = await post({ action: "comment", id: task.id, summary: "Verified token=private-value", details, expectedUpdatedAt: task.updatedAt });
+    expect(response.status).toBe(200);
+    const board = await (await fetch(origin + "/api/board", { headers })).json();
+    expect(board.tasks[0].comments[0]).toMatchObject({ summary: "Verified token=private-value", details, text: details });
+    expect(board.activity[0]).toMatchObject({ taskId: task.id, commentId: board.tasks[0].comments[0].id, summary: "Verified token=[redacted]" });
+    expect(board.activity[0].data).toBeUndefined();
+    const abort = new AbortController(), stream = await fetch(origin + "/api/events", { headers, signal: abort.signal });
+    const reader = stream.body!.getReader();
+    let chunk = "";
+    while (!chunk.includes("\n\n")) chunk += new TextDecoder().decode((await reader.read()).value);
+    expect(chunk).toContain(`id: ${board.sequence}\n`);
+    const snapshot = JSON.parse(chunk.split("data: ")[1].split("\n\n")[0]);
+    expect(snapshot.activity).toEqual(board.activity);
+    abort.abort(); await reader.cancel().catch(() => {});
+  });
+  it("accepts task intake into Backlog without trusting forged execution state", async () => {
+    const response = await post({ action: "create", task: { ...input, column: "done", evaluations: { orchestrator: { total: 100 } }, mergeApproved: true } });
+    expect(response.status).toBe(200);
+    const task = store.read().tasks[0];
+    expect(task).toMatchObject({ column: "backlog", runs: 0, evaluations: {}, mergeApproved: false });
+    expect(task.history[0].actor).toBe("user");
+    expect((await post({ action: "create", task: { ...input, rubric: [] } })).status).toBe(400);
+  });
+  it("streams native run changes even when the durable task sequence is unchanged", async () => {
+    await server.close();
+    let status = "running" as "running" | "completed";
+    controller = new KanbanController(store, { spawn: vi.fn(), record: vi.fn(), stop: vi.fn(), steer: vi.fn(), validAgent: () => true, notify: vi.fn(), runs: () => [{ id: "native", name: "Native agent", status, description: "Harness work" }] });
+    server = await startKanbanServer(controller);
+    const url = new URL(server.url); origin = url.origin; headers.Authorization = "Bearer " + url.hash.slice(1);
+    const abort = new AbortController();
+    const response = await fetch(origin + "/api/events", { headers, signal: abort.signal });
+    const reader = response.body!.getReader();
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain('"status":"running"');
+      const sequence = store.read().sequence; status = "completed";
+      let update = "";
+      while (!update.includes('"status":"completed"')) update += new TextDecoder().decode((await reader.read()).value);
+      expect(store.read().sequence).toBe(sequence);
+    } finally { abort.abort(); await reader.cancel().catch(() => {}); }
+  });
+  it("pauses all pending tasks without touching completed or archived tasks", async () => {
+    const pending = store.create(input, "orchestrator");
+    const done = store.create(input, "orchestrator");
+    store.change(board => { store.task(board, done.id).column = "done"; });
+    const response = await post({ action: "pause-all" });
+    expect(response.status).toBe(200);
+    expect(store.task(store.read(), pending.id)).toMatchObject({ column: "backlog", userPaused: true });
+    expect(store.task(store.read(), done.id)).toMatchObject({ column: "done" });
+    expect(() => store.move(pending.id, "ready", "orchestrator")).toThrow(/Only the user/);
+  });
   it("returns current durable project state", async () => { const task = store.create(input, "orchestrator"); const response = await fetch(origin + "/api/board", { headers }); expect(response.status).toBe(200); expect((await response.json()).tasks[0].id).toBe(task.id); });
   it("streams the initial board and updates without reloading", async () => {
     const abort = new AbortController(); const response = await fetch(origin + "/api/events", { headers, signal: abort.signal });
@@ -39,7 +91,7 @@ describe("loopback-only authenticated Kanban web server", () => {
     let update = ""; while (!update.includes(task.id)) update += new TextDecoder().decode((await reader.read()).value);
     expect(update).toContain(task.id); abort.abort(); await reader.cancel().catch(() => {});
   });
-  it("archives tasks without deleting comments/history", async () => { const task = store.create(input, "orchestrator"); const response = await post({ action: "archive", id: task.id, expectedUpdatedAt: task.updatedAt }); expect(response.status).toBe(200); expect(store.read().tasks[0].archived).toBe(true); expect(store.read().tasks[0].history).toHaveLength(2); });
+  it("archives only Done tasks without deleting comments/history", async () => { const task = store.create(input, "orchestrator"); expect((await post({ action: "archive", id: task.id, expectedUpdatedAt: task.updatedAt })).status).toBe(400); store.change(b => { store.task(b, task.id).column = "done"; }); const done = store.read().tasks[0]; const response = await post({ action: "archive", id: task.id, expectedUpdatedAt: done.updatedAt }); expect(response.status).toBe(200); expect(store.read().tasks[0].archived).toBe(true); expect(store.read().tasks[0].history.at(-1)?.event).toContain("archived"); });
   it("rejects stale browser actions with a conflict response", async () => { const task = store.create(input, "orchestrator"); store.comment(task.id, "Changed", "user"); expect((await post({ action: "archive", id: task.id, expectedUpdatedAt: task.updatedAt })).status).toBe(409); expect(store.read().tasks[0].archived).toBe(false); });
   it("accepts user comments for the assigned worker to receive", async () => { const task = store.create(input, "orchestrator"); const response = await post({ action: "comment", id: task.id, text: "Please verify empty inputs", expectedUpdatedAt: task.updatedAt }); expect(response.status).toBe(200); expect(store.read().tasks[0].comments[0].author).toBe("user"); });
   it("cannot bypass completion by dragging a task to done", async () => { const task = store.create(input, "orchestrator"); expect((await post({ action: "move", id: task.id, column: "done", expectedUpdatedAt: task.updatedAt })).status).toBe(400); expect(store.read().tasks[0].column).toBe("backlog"); });

@@ -188,3 +188,10 @@ describe("background completion notification wiring", () => {
     await handlers.get("session_shutdown")?.();
   });
 });
+
+// Default-mode wiring must not consume personal/project Kanban settings.
+vi.mock("../src/settings.js", async () => ({
+  ...await vi.importActual<typeof import("../src/settings.js")>("../src/settings.js"),
+  loadSettings: () => ({}),
+  applyAndEmitLoaded: () => ({}),
+}));

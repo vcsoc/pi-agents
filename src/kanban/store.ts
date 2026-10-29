@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 export const COLUMNS = ["backlog", "ready", "in progress", "review", "done"] as const;
@@ -8,18 +8,25 @@ export type Role = "operator" | "tester" | "reviewer" | "orchestrator";
 export interface Criterion { title: string; weight: number }
 export interface Evaluation { role: Role; actor: string; revision: number; scores: number[]; total: number; notes: string; fingerprint: string; at: string }
 export interface TestEvidence { command: string; exitCode: number; output: string; fingerprint: string; at: string }
-export interface Comment { id: string; author: string; text: string; at: string }
-export interface Audit { at: string; actor: string; event: string; data?: unknown }
-export interface Lease { token: string; owner: string; pid: number; role: Role; revision: number; commentOnly?: boolean }
+export interface WorkerIdentity { id: string; name: string; role: Role; definition: string }
+export type WorkerState = "working" | "thinking" | "waiting_dependency" | "waiting_user" | "stuck" | "idle" | "finished" | "error";
+export interface WorkerStatus { state: WorkerState; reason: string; since: string; updatedAt: string; identity: WorkerIdentity; dependencyId?: string }
+export interface Comment { id: string; author: string; text: string; at: string; summary?: string; details?: string; identity?: WorkerIdentity }
+export interface Audit { id?: string; at: string; actor: string; event: string; data?: unknown; identity?: WorkerIdentity; durationMs?: number | null; mutationDurationMs?: number; delayMs?: number | null }
+export interface Activity extends Audit { taskId: string; summary?: string; commentId?: string }
+export interface Lease { isolated?: boolean; identity?: WorkerIdentity; token: string; owner: string; pid: number; role: Role; revision: number; commentOnly?: boolean }
 export interface Task {
   id: string; title: string; scope: string; assignee: string; testerAgent: string; reviewerAgent: string;
   column: Column; phase: Role; revision: number; userPaused?: boolean; rubric: Criterion[]; evaluations: Partial<Record<Role, Evaluation>>;
   tests: TestEvidence[]; comments: Comment[]; history: Audit[]; archived: boolean; createdAt: string; updatedAt: string;
   prMode: "none" | "review" | "merge"; mergeApproved: boolean;
   pr?: { number: number; url: string; branch: string; completed: boolean; synced: boolean };
-  workspace?: string; fingerprint?: string; lease?: Lease; repliedThrough?: string; runs: number; maxRuns: number; blocked?: string;
+  workers?: Partial<Record<Role, WorkerIdentity>>; workerStatus?: WorkerStatus;
+  snapshot?: { revision: number; manifest: string }; lastDispatchedAt?: string;
+  queue?: { state: "capacity" | "lease" | "conflict"; reason: string; dependencyId?: string; limit?: number; running?: number };
+  workspace?: string; fingerprint?: string; lease?: Lease; executionLease?: Lease; repliedThrough?: string; runs: number; maxRuns: number; blocked?: string;
 }
-export interface Board { version: 1; id: string; name: string; projectPath: string; sequence: number; tasks: Task[] }
+export interface Board { version: 1; id: string; name: string; projectPath: string; sequence: number; tasks: Task[]; activity?: Activity[] }
 export interface NewTask {
   title: string; scope: string; assignee: string; rubric: Criterion[]; testerAgent?: string; reviewerAgent?: string;
   prMode?: Task["prMode"]; maxRuns?: number;
@@ -47,7 +54,7 @@ export class KanbanStore {
   readonly directory: string;
   readonly file: string;
   readonly identity: ReturnType<typeof projectIdentity>;
-  constructor(cwd: string, stateRoot: string) {
+  constructor(cwd: string, readonly stateRoot: string) {
     this.identity = projectIdentity(cwd);
     this.directory = join(stateRoot, this.identity.id);
     this.file = join(this.directory, "board.json");
@@ -58,6 +65,13 @@ export class KanbanStore {
     if (!existsSync(this.file)) return { version: 1, ...this.identity, sequence: 0, tasks: [] };
     const b = JSON.parse(readFileSync(this.file, "utf8")) as Board;
     if (b.version !== 1 || b.id !== this.identity.id || b.projectPath !== this.identity.projectPath || !Array.isArray(b.tasks) || !Number.isInteger(b.sequence)) throw new Error("Invalid Kanban state; restore its backup rather than silently resetting history");
+    for (const t of b.tasks) {
+      t.history.forEach((e, i) => { e.id ??= `legacy:${t.id}:${i}`; e.durationMs ??= null; e.delayMs ??= i ? Math.max(0, Date.parse(e.at) - Date.parse(t.history[i - 1].at)) : null; });
+      for (const c of t.comments) { c.details ??= c.text; c.summary ??= c.text.split(/\r?\n/)[0].slice(0, 240); }
+      if (t.workerStatus && !t.lease && ["working", "thinking", "waiting_dependency"].includes(t.workerStatus.state)) {
+        t.workerStatus = { ...t.workerStatus, state: t.blocked ? "error" : "idle", reason: t.blocked ?? "No active worker lease", since: t.updatedAt, updatedAt: t.updatedAt };
+      }
+    }
     return b;
   }
   change<T>(mutate: (board: Board) => T): T {
@@ -78,7 +92,15 @@ export class KanbanStore {
     try {
       writeFileSync(join(lock, "pid"), String(process.pid));
       const board = this.read();
+      const before = new Map(board.tasks.map(t => [t.id, { json: JSON.stringify(t), history: t.history.length }]));
+      const started = performance.now();
       const result = mutate(board);
+      const duration = Math.max(0, performance.now() - started);
+      for (const t of board.tasks) {
+        const prior = before.get(t.id);
+        if (prior && prior.json !== JSON.stringify(t) && prior.history === t.history.length) this.audit(t, "system", "task updated");
+        for (const e of t.history.slice(prior?.history ?? 0)) e.mutationDurationMs = duration;
+      }
       board.sequence++;
       writeFileSync(temporary, JSON.stringify(board, null, 2), { mode: 0o600 });
       renameSync(temporary, this.file);
@@ -93,9 +115,74 @@ export class KanbanStore {
     if (!t) throw new Error("Task not found");
     return t;
   }
-  audit(t: Task, actor: string, event: string, data?: unknown) {
+  audit(t: Task, actor: string, event: string, data?: unknown, durationMs: number | null = null, worker?: WorkerIdentity) {
+    const previous = t.history.at(-1);
+    const identity = worker ?? t.workers?.[actor as Role] ?? Object.values(t.workers ?? {}).find(w => w?.name === actor);
     t.updatedAt = new Date(Math.max(Date.now(), Date.parse(t.updatedAt) + 1)).toISOString();
-    t.history.push({ at: t.updatedAt, actor, event, data });
+    t.history.push({ id: randomUUID(), at: t.updatedAt, actor: identity?.name ?? actor, identity, event, data, durationMs, delayMs: previous ? Math.max(0, Date.parse(t.updatedAt) - Date.parse(previous.at)) : null });
+  }
+  workerIdentity(b: Board, t: Task, role: Role): WorkerIdentity {
+    t.workers ??= {};
+    const definition = role === "tester" ? t.testerAgent : role === "reviewer" ? t.reviewerAgent : t.assignee;
+    if (t.workers[role]?.definition === definition) return t.workers[role]!;
+    const names = "Ada Ben Cleo Dean Eva Finn Gia Hugo Iris Jude Kai Lena Milo Nora Omar Pia Quinn Rosa Seth Tara Uma Vera Wade Xena Yara Zane Abel Alma Anya Arlo Axel Beau Bram Bree Bryn Cara Cora Dana Dario Dora Eden Elsa Enid Eric Esme Etta Faye Fern Flora Fred Gail Gino Glen Greta Gus Hana Hank Hazel Hope Hugh Ian Ida Inez Ivan Jack Jade Jane Jaya Jean Joel Joan Jodi Joey June Kian Kira Kit Knox Lana Lara Leah Leon Levi Liam Lila Lina Lisa Lois Lola Luca Luis Luna Lyra Mae Mara Marc Maya Mia Mina Mira Mona Nate Neal Nell Nia Nico Nina Noel Nova Owen Otto Orla Oona Paco Paul Pearl Petra Phil Piers Rami Raul Reed Remy Rene Rhea Rick Rita Rob Rory Rose Ross Ruby Ruth Ryan Sage Sam Sara Sean Shay Sid Skye Stan Stella Tess Theo Tia Tina Toby Tom Tony Troy Una Uri Val Veda Vito Walt Willa Will Wren Wynn Yale Zara Zeke Zoe Aidan Alice Amber Amy Andre Andy Anita Anne Anton April Ariel Ash Barry Basil Bella Blair Blake Bonnie Boris Brian Brock Bruce Caleb Calvin Cam Casey Cecil Chad Chase Clara Clark Cody Cole Colin Craig Cyrus Dale Damon David Dawn Demi Denis Derek Devon Diane Diego Donna Drew Dylan Edith Elena Eli Ellen Elmer Elora Emily Emre Erin Ethan Felix Fiona Flynn Frank Freya Gavin Grace Grant Gwen Harry Heath Heidi Helen Holly Ilan Indy Isaac Isla Jacob James Jared Jason Jenna Jesse Jonah Jonas Josie Joyce Julia Julie Kade Kara Kate Keith Kelly Kerry Kevin Koby Kyle Lance Larry Laura Layla Lee Lewis Linda Logan Lorne Louis Lucie Lydia Mabel Margo Marie Mario Mark Marta Mason Matt Max Megan Micah Miles Molly Naomi Neil Niles Olive Oscar Paige Perry Peter Ralph Ravi Rhys Robin Ronan Rowan Sadie Sally Sasha Scott Shane Shawn Sia Simon Sonia Sophie Steve Susan Sylvie Talia Tessa Tim Tyler Vince Viola Wendy Wes Wilma Yuki Zora".split(" ");
+    const lock = join(this.stateRoot, "names.lock"), file = join(this.stateRoot, "worker-names.json");
+    try { mkdirSync(lock); } catch {
+      let stale = false;
+      try { const pid = Number(readFileSync(join(lock, "pid"), "utf8")); if (!Number.isInteger(pid) || pid < 1) throw new Error("Invalid lock owner"); try { process.kill(pid, 0); } catch (e) { stale = (e as NodeJS.ErrnoException).code === "ESRCH"; } } catch { stale = Date.now() - statSync(lock).mtimeMs > 30000; }
+      if (!stale) throw new Error("Worker name allocator busy; retry claim");
+      rmSync(lock, { recursive: true }); mkdirSync(lock);
+    }
+    try {
+      writeFileSync(join(lock, "pid"), String(process.pid));
+      const reserved: Record<string, string> = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+      const used = new Set([...Object.keys(reserved), ...b.tasks.flatMap(task => Object.values(task.workers ?? {}).map(w => w?.name))]);
+      // Import names from boards created before the global reservation registry existed.
+      for (const entry of readdirSync(this.stateRoot, { withFileTypes: true })) {
+        const boardFile = join(this.stateRoot, entry.name, "board.json");
+        if (!entry.isDirectory() || !existsSync(boardFile)) continue;
+        const other = JSON.parse(readFileSync(boardFile, "utf8")) as Board;
+        for (const task of other.tasks) for (const worker of Object.values(task.workers ?? {})) if (worker) used.add(worker.name);
+      }
+      // Preserve short first names; extend with a permanent numeric discriminator after catalog exhaustion.
+      let name = names.find(candidate => !used.has(candidate));
+      for (let suffix = 2; !name; suffix++) name = names.map(base => `${base}-${suffix}`).find(candidate => !used.has(candidate));
+      const identity = { id: randomUUID(), name, role, definition };
+      reserved[name] = identity.id;
+      const temporary = `${file}.${randomUUID()}.tmp`;
+      try { writeFileSync(temporary, JSON.stringify(reserved), { mode: 0o600 }); renameSync(temporary, file); } finally { rmSync(temporary, { force: true }); }
+      t.workers[role] = identity;
+      return identity;
+    } finally { rmSync(lock, { recursive: true, force: true }); }
+  }
+  status(t: Task, identity: WorkerIdentity, state: WorkerState, reason: string, dependencyId?: string) {
+    const at = now();
+    t.workerStatus = { identity, state, reason, dependencyId, since: t.workerStatus?.state === state && t.workerStatus.reason === reason ? t.workerStatus.since : at, updatedAt: at };
+  }
+  activity(board = this.read()): Activity[] {
+    return board.tasks.flatMap(t => t.history.map(e => {
+      const comment = e.event === "comment" ? e.data as Comment | undefined : undefined;
+      const summary = comment?.summary?.slice(0, 500).replace(/(Bearer\s+|(?:api[_-]?key|token|password|secret)\s*[:=]\s*)\S+/gi, "$1[redacted]");
+      return { ...e, data: undefined, taskId: t.id, summary, commentId: comment?.id };
+    }))
+      .sort((a, b) => b.at.localeCompare(a.at) || (b.id ?? "").localeCompare(a.id ?? "")).slice(0, 200);
+  }
+  observe(id: string, lease: Lease, event: string, durationMs: number | null = null, state?: WorkerState, reason = event, observation?: { id: string; at: string }) {
+    this.change(b => {
+      const t = this.task(b, id);
+      if (observation && t.history.some(e => e.id === observation.id)) return;
+      const active = t.lease?.token === lease.token && !t.archived && t.column !== "backlog" && (t.column !== "done" || !!lease.commentOnly);
+      if (!active && !lease.identity) return;
+      if (state && active) this.status(t, lease.identity ?? this.workerIdentity(b, t, lease.role), state, reason);
+      this.audit(t, lease.role, event, undefined, durationMs, lease.identity);
+      if (observation) {
+        const entry = t.history.at(-1)!;
+        entry.id = observation.id;
+        entry.at = observation.at;
+        const previous = t.history.at(-2);
+        entry.delayMs = previous ? Math.max(0, Date.parse(entry.at) - Date.parse(previous.at)) : null;
+      }
+    });
   }
   assertActive(t: Task, lease: Lease) {
     if (t.archived || t.column === "backlog" || (t.column === "done" && !lease.commentOnly) || t.lease?.token !== lease.token || t.revision !== lease.revision || t.phase !== lease.role) throw new Error("Task is paused, archived, completed, reassigned, or this run is stale. Stop work.");
@@ -122,7 +209,18 @@ export class KanbanStore {
   reset(t: Task) {
     t.revision++; t.phase = "operator"; t.evaluations = {}; t.tests = []; t.fingerprint = undefined;
     if (t.pr) { t.pr.completed = false; t.pr.synced = false; }
-    t.lease = undefined; t.blocked = undefined; t.mergeApproved = false;
+    if (t.workerStatus) this.status(t, t.workerStatus.identity, "idle", "Task reset; active work cancelled");
+    t.lease = undefined; t.blocked = undefined; t.queue = undefined; t.mergeApproved = false;
+  }
+  pauseAll(actor: string) {
+    return this.change(b => {
+      for (const t of b.tasks) {
+        if (t.archived || t.column === "done") continue;
+        if (t.column !== "backlog") { this.reset(t); t.column = "backlog"; }
+        if (actor === "user") t.userPaused = true;
+        this.audit(t, actor, "paused with all harness work");
+      }
+    });
   }
   move(id: string, column: Column, actor: string, expectedUpdatedAt?: string) {
     return this.change(b => {
@@ -151,12 +249,19 @@ export class KanbanStore {
       return t;
     });
   }
-  comment(id: string, message: string, actor: string, expectedUpdatedAt?: string) {
+  private appendComment(t: Task, message: string | { summary: string; details: string }, actor: string) {
+    const details = typeof message === "string" ? message : message.details;
+    text(details, "Comment details", 200000);
+    const summary = typeof message === "string" ? details.split(/\r?\n/)[0].slice(0, 240) : text(message.summary, "Comment summary", 500);
+    const identity = t.workers?.[actor as Role];
+    const c = { id: randomUUID(), author: identity?.name ?? actor, identity, text: details, summary, details, at: now() };
+    t.comments.push(c); this.audit(t, actor, "comment", c);
+  }
+  comment(id: string, message: string | { summary: string; details: string }, actor: string, expectedUpdatedAt?: string) {
     return this.change(b => {
       const t = this.task(b, id);
       if (expectedUpdatedAt && t.updatedAt !== expectedUpdatedAt) throw new Error("Task changed; retry your comment");
-      const c = { id: randomUUID(), author: actor, text: text(message, "Comment"), at: now() };
-      t.comments.push(c); this.audit(t, actor, "comment", c);
+      this.appendComment(t, message, actor);
       return t;
     });
   }
@@ -164,7 +269,11 @@ export class KanbanStore {
     return this.change(b => {
       const t = this.task(b, id);
       if (expectedUpdatedAt && t.updatedAt !== expectedUpdatedAt) throw new Error("Task changed; reopen before archiving it");
-      t.archived = true; t.lease = undefined; this.audit(t, actor, "archived; future work cancelled");
+      if (t.column !== "done" && !t.archived) throw new Error("Only Done tasks can be archived; use Pause in Backlog to cancel active work");
+      if (t.archived) return t;
+      t.archived = true; t.lease = undefined;
+      if (t.workerStatus) this.status(t, t.workerStatus.identity, "finished", "Task archived");
+      this.audit(t, actor, "archived; future work cancelled");
       return t;
     });
   }
@@ -172,15 +281,29 @@ export class KanbanStore {
     return this.change(b => {
       const tasks = b.tasks.filter(t => !t.archived);
       if (!tasks.length || tasks.some(t => t.column !== "done")) throw new Error("Archive all done is available only when every active task is done");
-      for (const t of tasks) { t.archived = true; this.audit(t, actor, "archived completed scope"); }
+      for (const t of tasks) { t.archived = true; t.lease = undefined; if (t.workerStatus) this.status(t, t.workerStatus.identity, "finished", "Task archived"); this.audit(t, actor, "archived completed scope"); }
     });
   }
-  claim(id: string, owner: string, commentOnly = false): Lease {
+  claim(id: string, owner: string, commentOnly = false, isolated = false, capacity?: number): Lease {
     return this.change(b => {
       const t = this.task(b, id);
       if (t.archived || t.column === "backlog" || (!commentOnly && (!["ready", "in progress", "review"].includes(t.column) || t.phase === "orchestrator" || t.blocked))) throw new Error("Task is not dispatchable");
       if (commentOnly && (!t.comments.some(c => c.author === "user") || t.comments.filter(c => c.author === "user").at(-1)?.id === t.repliedThrough)) throw new Error("No unanswered user comment");
-      if (t.prMode === "none" && b.tasks.some(other => other.id !== id && other.prMode === "none" && !other.archived && (other.lease || (other.runs > 0 && ["ready", "in progress", "review"].includes(other.column))))) throw new Error("Another task owns the shared working tree");
+      // A handoff revokes tools immediately, but in-flight commands must drain before another role reuses the snapshot.
+      if (t.executionLease) {
+        let alive = true;
+        try { process.kill(t.executionLease.pid, 0); } catch (e) { alive = (e as NodeJS.ErrnoException).code !== "ESRCH"; }
+        if (alive) throw new Error(`Snapshot worker is still draining; dependency: ${t.id} in Pi process ${t.executionLease.pid}`);
+        t.executionLease = undefined;
+      }
+      const sharedOwner = b.tasks.find(other => other.id !== id && other.prMode === "none" && !other.archived && !other.snapshot && !other.lease?.isolated && (other.lease || (other.runs > 0 && ["ready", "in progress", "review"].includes(other.column))));
+      if (t.prMode === "none" && !commentOnly && sharedOwner) throw new Error(`Another task owns the shared working tree; dependency: ${sharedOwner.id}`);
+      if (t.prMode === "none" && !commentOnly && !isolated && b.tasks.some(other => other.id !== id && other.lease && !other.lease.commentOnly)) throw new Error("Another task owns the shared working tree");
+      if (capacity !== undefined && b.tasks.filter(other => {
+        const execution = other.executionLease ?? other.lease;
+        if (other.id === id || !execution) return false;
+        try { process.kill(execution.pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== "ESRCH"; }
+      }).length >= capacity) throw new Error(`Kanban lease capacity ${capacity} is occupied across Pi processes`);
       if (t.lease) {
         let alive = true;
         try { process.kill(t.lease.pid, 0); } catch (e) { alive = (e as NodeJS.ErrnoException).code !== "ESRCH"; }
@@ -188,17 +311,23 @@ export class KanbanStore {
         this.audit(t, "system", "recovered stale worker lease");
       }
       if (t.runs >= t.maxRuns) { throw new Error("Agent run budget exhausted; move to backlog then ready to authorize another budget"); }
-      const lease: Lease = { token: randomUUID(), owner, pid: process.pid, role: t.phase, revision: t.revision, commentOnly };
-      t.lease = lease; t.runs++; if (t.phase === "operator" && !commentOnly) t.column = "in progress";
+      const lease: Lease = { token: randomUUID(), owner, pid: process.pid, role: t.phase, revision: t.revision, commentOnly, isolated };
+      lease.identity = this.workerIdentity(b, t, lease.role);
+      this.status(t, lease.identity, "working", "Worker claimed task");
+      if (isolated) t.executionLease = lease;
+      t.lease = lease; t.runs++; t.lastDispatchedAt = now(); t.queue = undefined; if (t.phase === "operator" && !commentOnly) t.column = "in progress";
       this.audit(t, t.phase, "worker claimed task", { role: lease.role, run: t.runs });
       return lease;
     });
   }
-  release(id: string, lease: Lease, error?: string) {
+  release(id: string, lease: Lease, error?: string, drained = false) {
     return this.change(b => {
       const t = this.task(b, id);
+      if (drained && t.executionLease?.token === lease.token) { t.executionLease = undefined; this.audit(t, lease.role, "snapshot worker drained"); }
       if (t.lease?.token !== lease.token) return;
+      this.status(t, this.workerIdentity(b, t, lease.role), error ? "error" : "finished", error ?? "Worker finished");
       t.lease = undefined;
+      this.audit(t, lease.role, "worker released");
       if (error) { t.blocked = error; this.audit(t, lease.role, "worker stopped", error); }
     });
   }
@@ -216,12 +345,12 @@ export class KanbanStore {
       if (lease) this.assertActive(t, lease);
       if (t.archived || t.column !== "review" || t.phase !== role || role === "operator") throw new Error("This role cannot evaluate this task at this stage");
       const total = rubricScore(t.rubric, scores);
-      const e: Evaluation = { role, actor, revision: t.revision, scores, total, notes: text(notes, "Detailed evaluation/fix instructions"), fingerprint, at: now() };
+      const e: Evaluation = { role, actor: lease?.identity?.name ?? actor, revision: t.revision, scores, total, notes: text(notes, "Detailed evaluation/fix instructions"), fingerprint, at: now() };
       if (t.fingerprint !== fingerprint) throw new Error("Work changed since submission. Return the task to backlog and retest the new revision.");
       if (role === "tester" && (!t.tests.length || t.tests.some(e => e.fingerprint !== fingerprint || (total >= 85 && e.exitCode !== 0)))) throw new Error("Tester must execute passing tests against the submitted revision before scoring");
-      t.evaluations[role] = e; this.audit(t, actor, "rubric evaluation", e);
-      t.comments.push({ id: randomUUID(), author: role, at: now(), text: `${total.toFixed(2)}%: ${e.notes}` });
-      if (total < 85) { this.reset(t); t.column = "ready"; }
+      t.evaluations[role] = e; this.audit(t, lease?.identity?.name ?? actor, "rubric evaluation", e, null, lease?.identity);
+      this.appendComment(t, `${total.toFixed(2)}%: ${e.notes}`, role);
+      if (total < 85) { this.reset(t); if (t.snapshot) t.snapshot.revision = t.revision; t.column = "ready"; }
       return t;
     });
   }
@@ -230,7 +359,7 @@ export class KanbanStore {
       const t = this.task(b, id); this.assertActive(t, lease);
       text(summary, "Handoff summary");
       t.repliedThrough = t.comments.filter(c => c.author === "user").at(-1)?.id;
-      if (lease.commentOnly) { t.lease = undefined; this.audit(t, "assigned agent", "comment response completed", summary); return t; }
+      if (lease.commentOnly) { this.status(t, this.workerIdentity(b, t, lease.role), "finished", "Comment response completed"); t.lease = undefined; this.audit(t, lease.role, "comment response completed", summary); return t; }
       if (lease.role === "operator") {
         t.column = "review"; t.phase = "tester"; t.fingerprint = fingerprint;
       } else {
@@ -238,12 +367,13 @@ export class KanbanStore {
         if (t.prMode !== "none" && (!t.pr || (lease.role === "reviewer" && !t.pr.completed))) throw new Error("Complete this role's PR stage before handing off");
         t.phase = lease.role === "tester" ? "reviewer" : "orchestrator";
       }
+      this.status(t, this.workerIdentity(b, t, lease.role), "finished", "Handoff completed");
       t.lease = undefined; this.audit(t, lease.role, "handoff", summary);
-      t.comments.push({ id: randomUUID(), author: lease.role, at: now(), text: summary });
+      this.appendComment(t, summary, lease.role);
       return t;
     });
   }
-  complete(id: string, fingerprint: string) {
+  complete(id: string, fingerprint: string, integrate?: (task: Task) => void) {
     return this.change(b => {
       const t = this.task(b, id);
       if (t.archived || t.phase !== "orchestrator" || t.column !== "review" || t.fingerprint !== fingerprint) throw new Error("Task is not ready for completion");
@@ -253,7 +383,12 @@ export class KanbanStore {
       }
       if (!t.tests.length || t.tests.some(e => e.exitCode !== 0 || e.fingerprint !== fingerprint)) throw new Error("Passing current-revision test evidence required");
       if (t.prMode !== "none" && (!t.pr?.completed || !t.pr.synced)) throw new Error("PR review/merge and all three rubric evaluations must be recorded on the PR");
-      t.column = "done"; t.lease = undefined; this.audit(t, "orchestrator", "completion gates passed");
+      if (t.snapshot) {
+        if (t.executionLease) throw new Error(`Snapshot worker is still draining; dependency: ${t.id}`);
+        if (!integrate) throw new Error("Isolated source must be conflict-checked and integrated before completion");
+        integrate(t);
+      }
+      t.column = "done"; t.lease = undefined; t.queue = undefined; this.audit(t, "orchestrator", "completion gates passed");
       return t;
     });
   }
