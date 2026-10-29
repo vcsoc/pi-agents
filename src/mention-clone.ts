@@ -65,6 +65,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { runInChildSessionContext } from "./child-context.js";
 import { agentMentionReminder } from "./mention.js";
+import { withFocusedExecutionGuidance } from "./prompts.js";
 import type { SubagentType } from "./types.js";
 
 export interface MentionCloneOptions {
@@ -148,7 +149,7 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
       noPromptTemplates: true,
       noThemes: true,
       noContextFiles: true,
-      systemPromptOverride: (base: string | undefined) => systemPrompt || base,
+      systemPromptOverride: (base: string | undefined) => withFocusedExecutionGuidance(systemPrompt || base || ""),
       appendSystemPromptOverride: () => [],
     });
     await runInChildSessionContext(() => loader.reload());

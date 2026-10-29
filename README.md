@@ -15,6 +15,12 @@ Use any tool-calling chat model configured in Pi, including hosted providers and
 
 All built-in agents use the main chat's model unless you choose another. Configure models through Pi's `/login`, `/model`, or `models.json`. For a smaller/local model, try `toolDescriptionMode: "compact"` and lower concurrency (the number of agents running at once).
 
+## Focused Execution
+
+Every extension-managed agent receives shared runtime guidance to finish its requested, scoped work as quickly as possible, ideally within 15 seconds per task, without distractions, unrelated exploration, or repeated work. This includes custom append/replace agents, nested/workflow/scheduled agents, mention-routing clones, and Kanban operator/tester/reviewer roles. Resumes retain the existing session guidance; inherited managed prompts do not get another copy.
+
+The 15-second goal is aspirational, not a hard timeout or deadline. Required investigation, tests, independent review, safety checks, and truthful reporting still apply. If required work takes longer, agents should continue focused within existing limits and report actual progress or blockers rather than false completion. User instructions, role separation, turn/cost budgets, and cancellation behavior are unchanged. This is model guidance, not a latency guarantee or an enforcement mechanism.
+
 ## Features
 
 - **Parallel agents:** run independent tasks at the same time. Extra background agents wait when the limit is reached (default: 10).

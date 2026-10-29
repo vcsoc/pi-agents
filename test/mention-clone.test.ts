@@ -41,6 +41,7 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
 
 import { agentMentionReminder } from "../src/mention.js";
 import { runMentionClone } from "../src/mention-clone.js";
+import { focusedExecutionGuidance, withFocusedExecutionGuidance } from "../src/prompts.js";
 
 /** The parent's root-to-leaf path: one user turn and its reply. */
 const BRANCH = [
@@ -134,6 +135,16 @@ const opts = (over: Record<string, unknown> = {}) => ({
 }) as any;
 
 describe("cloning the conversation", () => {
+  it.each([undefined, "", "parent", withFocusedExecutionGuidance("parent")])("includes shared focus guidance exactly once for parent %s", async (parent) => {
+    cloneSession(callsAgent());
+    await runMentionClone(opts({ ctx: mainCtx({ getSystemPrompt: () => parent }) }));
+    const render = loaders[0].options.systemPromptOverride;
+    const prompt = render("SDK base");
+    expect(prompt.split(focusedExecutionGuidance)).toHaveLength(2);
+    expect(prompt.startsWith(parent || "SDK base")).toBe(true);
+    expect(render("SDK base")).toBe(prompt);
+  });
+
   it("carries the conversation's own entries, not a rendering of them", async () => {
     // The whole point: the copy reasons over what the main model can see. Pi
     // builds every request from the session manager, so that is where they go.
@@ -190,7 +201,7 @@ describe("cloning the conversation", () => {
 
     expect(result).toEqual({ spawned: true });
     expect(inMemory).toHaveBeenCalledWith("/repo", undefined, []);
-    expect(loaders[0].options.systemPromptOverride(undefined)).toBe("the live system prompt");
+    expect(loaders[0].options.systemPromptOverride(undefined)).toBe(withFocusedExecutionGuidance("the live system prompt"));
   });
 
   it("carries the live system prompt rather than the one it rebuilt", async () => {
@@ -204,7 +215,7 @@ describe("cloning the conversation", () => {
     expect(loaders).toHaveLength(1);
     expect(loaders[0].reload).toHaveBeenCalled();
     expect(createAgentSession.mock.calls[0][0].resourceLoader).toBe(loaders[0]);
-    expect(loaders[0].options.systemPromptOverride("from SYSTEM.md")).toBe("the live system prompt");
+    expect(loaders[0].options.systemPromptOverride("from SYSTEM.md")).toBe(withFocusedExecutionGuidance("the live system prompt"));
   });
 
   it("adds nothing the live prompt already contains", async () => {

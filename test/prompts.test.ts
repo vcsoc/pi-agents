@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { getAgentConfig, registerAgents } from "../src/agent-types.js";
-import { buildAgentPrompt } from "../src/prompts.js";
+import { buildAgentPrompt, focusedExecutionGuidance, withFocusedExecutionGuidance } from "../src/prompts.js";
 import type { AgentConfig, EnvInfo } from "../src/types.js";
 
 const env: EnvInfo = {
@@ -25,6 +25,33 @@ function getDefaultConfig(name: string): AgentConfig {
 }
 
 describe("buildAgentPrompt", () => {
+  it.each(["operate", "inspect", "design"])("adds shared focus guidance to %s without changing role instructions", (name) => {
+    const config = getDefaultConfig(name);
+    const prompt = buildAgentPrompt(config, "/workspace", env, "Parent user instructions.", { workflowChild: true });
+    expect(prompt).toContain(focusedExecutionGuidance);
+    expect(prompt).toContain(config.systemPrompt);
+    expect(prompt).toContain("<workflow_child>");
+  });
+
+  it("keeps one instruction across nested append prompts and repeated continuation preparation", () => {
+    const config = getDefaultConfig("operate");
+    let prompt = buildAgentPrompt(config, "/workspace", env, "Parent user instructions.");
+    for (let i = 0; i < 3; i++) {
+      const parent = prompt;
+      prompt = buildAgentPrompt(config, "/workspace", env, parent);
+      expect(prompt.startsWith(parent)).toBe(true);
+      expect(prompt.split(focusedExecutionGuidance)).toHaveLength(2);
+      expect(withFocusedExecutionGuidance(prompt)).toBe(prompt);
+    }
+  });
+
+  it("makes speed aspirational while retaining mandatory work and existing limits", () => {
+    const prompt = buildAgentPrompt(getDefaultConfig("inspect"), "/workspace", env);
+    for (const instruction of ["ideally within 15 seconds per task", "aspirational target, not a hard timeout or deadline", "Never skip required investigation, tests, independent review, safety checks, or truthful reporting", "Preserve user instructions, role separation, execution budgets, and cancellation rules", "report actual progress or blockers", "never claim completion without evidence"]) {
+      expect(prompt).toContain(instruction);
+    }
+  });
+
   it("includes cwd and git info", () => {
     const config = getDefaultConfig("operate");
     const prompt = buildAgentPrompt(config, "/workspace", env);

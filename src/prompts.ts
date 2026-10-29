@@ -4,6 +4,19 @@
 
 import type { AgentConfig, EnvInfo } from "./types.js";
 
+/** Shared instruction, not an execution limit. Keep inherited copies cacheable. */
+export const focusedExecutionGuidance = `<focused_execution>
+Finish your requested, scoped work as quickly as possible, ideally within 15 seconds per task. This is an aspirational target, not a hard timeout or deadline.
+Stay focused on the request; avoid distractions, unrelated exploration, and repeated work. Reuse available evidence when appropriate.
+Never skip required investigation, tests, independent review, safety checks, or truthful reporting to meet this target. Preserve user instructions, role separation, execution budgets, and cancellation rules.
+When required work takes longer, continue focused within the existing limits and report actual progress or blockers; never claim completion without evidence.
+</focused_execution>`;
+
+/** Append once, including when an append-mode child inherits a managed prompt. */
+export function withFocusedExecutionGuidance(prompt: string): string {
+  return prompt.includes(focusedExecutionGuidance) ? prompt : `${prompt}\n\n${focusedExecutionGuidance}`;
+}
+
 /** Extra sections to inject into the system prompt (memory, skills, etc.). */
 export interface PromptExtras {
   /** Persistent memory content to inject (first 200 lines of MEMORY.md + instructions). */
@@ -123,7 +136,7 @@ You are operating as a sub-agent invoked to handle a specific task.
     // placed verbatim (no wrapper tag) so it forms an identical byte prefix
     // with the parent session, maximising KV cache hits. The <active_agent>
     // tag and env block vary per call and are placed after the cached prefix.
-    return identity + "\n\n" + bridge + "\n\n" + activeAgentTag + envBlock + worktreeBlock + workflowBlock + customSection + extrasSuffix;
+    return withFocusedExecutionGuidance(identity + "\n\n" + bridge + "\n\n" + activeAgentTag + envBlock + worktreeBlock + workflowBlock + customSection + extrasSuffix);
   }
 
   // "replace" mode — env header + the config's full system prompt
@@ -132,7 +145,7 @@ You have been invoked to handle a specific task autonomously.
 
 ${envBlock}`;
 
-  return activeAgentTag + replaceHeader + worktreeBlock + workflowBlock + "\n\n" + config.systemPrompt + extrasSuffix;
+  return withFocusedExecutionGuidance(activeAgentTag + replaceHeader + worktreeBlock + workflowBlock + "\n\n" + config.systemPrompt + extrasSuffix);
 }
 
 /** Fallback base prompt when parent system prompt is unavailable in append mode. */

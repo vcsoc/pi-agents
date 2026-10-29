@@ -144,6 +144,7 @@ import {
   setRememberAgents,
 } from "../src/agent-runner.js";
 import { setParentModelInheritance } from "../src/model-inheritance.js";
+import { buildAgentPrompt } from "../src/prompts.js";
 import { compileJsonSchema } from "../src/workflow/json-schema.js";
 
 /** The most recent session built by `createSession` — read by `lastToolsPassed()`. */
@@ -226,6 +227,28 @@ beforeEach(() => {
 });
 
 describe("agent-runner final output capture", () => {
+  it.each(["ordinary", "operator", "tester", "reviewer"])("retains actual generated guidance for %s on initial run and resume", async (role) => {
+    const actual = await vi.importActual<typeof import("../src/prompts.js")>("../src/prompts.js");
+    vi.mocked(buildAgentPrompt).mockImplementationOnce(actual.buildAgentPrompt);
+    const { session } = createSession("EVIDENCE");
+    createAgentSession.mockResolvedValue({ session });
+    const kanban = role === "ordinary" ? undefined : {
+      prompt: `You are the ${role}. Stay within your assigned role.`,
+      tool: { name: "KanbanTask" } as any,
+      assertAllowed: () => {},
+    };
+    await runAgent(ctx, "inspect", "Work", { pi, kanban });
+    const loader = defaultResourceLoaderCtor.mock.calls[0][0];
+    const initial = loader.systemPromptOverride();
+    expect(initial.split(actual.focusedExecutionGuidance)).toHaveLength(2);
+    if (kanban) expect(initial).toContain(kanban.prompt);
+    await resumeAgent(session as any, "Continue required validation", { type: "inspect" });
+    expect(session.prompt).toHaveBeenCalledTimes(2);
+    expect(defaultResourceLoaderCtor).toHaveBeenCalledTimes(1);
+    expect(loader.systemPromptOverride()).toBe(initial);
+    expect(session.prompt.mock.calls[1][0]).toContain("Continue required validation");
+  });
+
   it("injects task controls and a persistent task gate even into isolated workers", async () => {
     const { session } = createSession("TASK");
     createAgentSession.mockResolvedValue({ session });
