@@ -1,4 +1,5 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { KanbanController } from "./controller.js";
@@ -9,6 +10,8 @@ export interface KanbanWebServer { url: string; close: () => Promise<void> }
 export interface ReadOnlyKanbanSource { readOnly: true; view: KanbanController["view"] }
 export async function startKanbanServer(controller: KanbanController | ReadOnlyKanbanSource): Promise<KanbanWebServer> {
   const token = randomBytes(32).toString("hex");
+  // Both source and compiled entrypoints resolve the packaged, licensed source asset.
+  const font = readFileSync(new URL("../../src/kanban/static/JetBrainsMono-Regular.woff2", import.meta.url));
   const listeners = new Set<ServerResponse>();
   let origin = "", previous = "";
   const boardSnapshot = () => controller.view();
@@ -19,12 +22,16 @@ export async function startKanbanServer(controller: KanbanController | ReadOnlyK
   const server = createServer(async (req, res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Referrer-Policy", "no-referrer");
-    res.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; font-src 'self'; img-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
     let url: URL;
     try { url = new URL(req.url ?? "/", origin || "http://127.0.0.1"); } catch { send(res, 400, { error: "Invalid request URL" }); return; }
     if (req.headers.host !== new URL(origin).host || (req.headers.origin && req.headers.origin !== origin)) { send(res, 403, { error: "Local same-origin requests only" }); return; }
     if (req.method === "GET" && url.pathname === "/") { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }); res.end(KANBAN_HTML); return; }
     if (req.method === "GET" && url.pathname === "/app.js") { res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" }); res.end(KANBAN_SCRIPT); return; }
+    if (req.method === "GET" && url.pathname === "/fonts/JetBrainsMono-Regular.woff2") {
+      res.writeHead(200, { "Content-Type": "font/woff2", "Cache-Control": "public, max-age=86400" });
+      res.end(font); return;
+    }
     const auth = Buffer.from(req.headers.authorization ?? "");
     const expected = Buffer.from(`Bearer ${token}`);
     if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) { send(res, 401, { error: "Open the board from /agents kban to authenticate" }); return; }
