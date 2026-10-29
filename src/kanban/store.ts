@@ -19,6 +19,7 @@ export interface Task {
   id: string; title: string; scope: string; assignee: string; testerAgent: string; reviewerAgent: string;
   column: Column; phase: Role; revision: number; userPaused?: boolean; rubric: Criterion[]; evaluations: Partial<Record<Role, Evaluation>>;
   tests: TestEvidence[]; comments: Comment[]; history: Audit[]; archived: boolean; createdAt: string; updatedAt: string;
+  disposition?: { kind: "cancelled"; reason: string; actor: "user" | "orchestrator"; at: string };
   prMode: "none" | "review" | "merge"; mergeApproved: boolean;
   pr?: { number: number; url: string; branch: string; completed: boolean; synced: boolean };
   workers?: Partial<Record<Role, WorkerIdentity>>; workerStatus?: WorkerStatus;
@@ -191,7 +192,7 @@ export class KanbanStore {
     });
   }
   assertActive(t: Task, lease: Lease) {
-    if (t.archived || t.column === "backlog" || (t.column === "done" && !lease.commentOnly) || t.lease?.token !== lease.token || t.revision !== lease.revision || t.phase !== lease.role) throw new Error("Task is paused, archived, completed, reassigned, or this run is stale. Stop work.");
+    if (t.disposition?.kind === "cancelled" || t.archived || t.column === "backlog" || (t.column === "done" && !lease.commentOnly) || t.lease?.token !== lease.token || t.revision !== lease.revision || t.phase !== lease.role) throw new Error("Task is paused, archived, completed, reassigned, or this run is stale. Stop work.");
   }
   create(input: NewTask, actor: string): Task {
     return this.change(b => {
@@ -232,6 +233,7 @@ export class KanbanStore {
     return this.change(b => {
       const t = this.task(b, id);
       if (expectedUpdatedAt && t.updatedAt !== expectedUpdatedAt) throw new Error("Task changed; reopen before modifying it");
+      if (t.disposition?.kind === "cancelled") throw new Error("Cancelled tasks are terminal; create a new task to authorize new work");
       if (t.archived) throw new Error("Archived tasks cannot be resumed");
       if (column === "ready" && t.userPaused && actor !== "user") throw new Error("Only the user may release a task they paused in backlog");
       if (column === "backlog") { this.reset(t); t.column = column; if (actor === "user") t.userPaused = true; }
@@ -272,6 +274,23 @@ export class KanbanStore {
       return t;
     });
   }
+  cancel(id: string, reason: string, actor: string, expectedUpdatedAt?: string) {
+    if (actor !== "user" && actor !== "orchestrator") throw new Error("Only the user or orchestrator may explicitly cancel a task; workers cannot cancel tasks");
+    const explanation = text(reason, "Cancellation reason");
+    return this.change(b => {
+      const t = this.task(b, id);
+      if (expectedUpdatedAt && t.updatedAt !== expectedUpdatedAt) throw new Error("Task changed; reopen before cancelling it");
+      if (t.disposition?.kind === "cancelled") return t;
+      if (t.archived || t.column === "done") throw new Error("Only unfinished, unarchived tasks can be cancelled; accepted completion cannot be relabelled");
+      const previous = { column: t.column, phase: t.phase, revision: t.revision, lease: t.lease };
+      t.disposition = { kind: "cancelled", reason: explanation, actor, at: now() };
+      // Revoke capabilities, not evidence or the execution fence: in-flight work must still drain.
+      t.column = "done"; t.lease = undefined; t.queue = undefined; t.mergeApproved = false;
+      if (t.workerStatus) this.status(t, t.workerStatus.identity, "finished", `Cancelled without acceptance: ${explanation}`);
+      this.audit(t, actor, "cancelled without acceptance", { ...t.disposition, previous });
+      return t;
+    });
+  }
   archive(id: string, actor: string, expectedUpdatedAt?: string) {
     return this.change(b => {
       const t = this.task(b, id);
@@ -294,7 +313,7 @@ export class KanbanStore {
   claim(id: string, owner: string, commentOnly = false, isolated = false, capacity?: number): Lease {
     return this.change(b => {
       const t = this.task(b, id);
-      if (t.archived || t.column === "backlog" || (!commentOnly && (!["ready", "in progress", "review"].includes(t.column) || t.phase === "orchestrator" || t.blocked))) throw new Error("Task is not dispatchable");
+      if (t.disposition?.kind === "cancelled" || t.archived || t.column === "backlog" || (!commentOnly && (!["ready", "in progress", "review"].includes(t.column) || t.phase === "orchestrator" || t.blocked))) throw new Error("Task is not dispatchable");
       if (commentOnly && (!t.comments.some(c => c.author === "user") || t.comments.filter(c => c.author === "user").at(-1)?.id === t.repliedThrough)) throw new Error("No unanswered user comment");
       // A handoff revokes tools immediately, but in-flight commands must drain before another role reuses the snapshot.
       if (t.executionLease) {

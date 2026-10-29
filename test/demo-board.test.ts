@@ -41,7 +41,7 @@ describe("isolated virtual demo board", () => {
       expect(response.status).toBe(200);
       expect((await response.json()).id).toBe(DEMO_BOARD_ID);
       const sequence = board.view().sequence;
-      for (const action of ["create", "move", "pause-all", "archive-done"]) {
+      for (const action of ["create", "move", "cancel", "pause-all", "archive-done"]) {
         const mutation = await fetch(`${url.origin}/api/action`, { method: "POST", headers, body: JSON.stringify({ action }) });
         expect(mutation.status).toBe(403);
       }

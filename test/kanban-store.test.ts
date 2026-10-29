@@ -33,6 +33,70 @@ describe("persistent project Kanban", () => {
     expect(resumed.blocked).toBeUndefined();
     expect(store.claim(t.id, "resumed").role).toBe("tester");
   });
+  it.each(["backlog", "ready", "in progress", "review"] as const)("explicit cancellation closes obsolete %s work without certifying it", column => {
+    const t = create();
+    store.change(b => { store.task(b, t.id).column = column; });
+    const before = current(t.id);
+    const cancelled = store.cancel(t.id, "Superseded by a newer implementation", "orchestrator", before.updatedAt);
+    expect(cancelled).toMatchObject({ column: "done", archived: false, disposition: { kind: "cancelled", reason: "Superseded by a newer implementation", actor: "orchestrator" }, revision: before.revision, evaluations: {}, tests: [] });
+    expect(cancelled.history.slice(0, -1)).toEqual(before.history);
+    expect(cancelled.history.at(-1)).toMatchObject({ actor: "orchestrator", event: "cancelled without acceptance", data: { previous: { column, phase: before.phase, revision: before.revision } } });
+    expect(cancelled.history.some(e => e.event === "completion gates passed")).toBe(false);
+    expect(Number.isFinite(Date.parse(cancelled.disposition!.at))).toBe(true);
+    const reopened = new KanbanStore(cwd, join(root, "state"));
+    expect(reopened.task(reopened.read(), t.id)).toEqual(cancelled);
+  });
+  it("cancellation retains all current and historical evidence, PR metadata and private checkpoints", () => {
+    const t = create(), tester = operatorDone(t.id);
+    evidence(t.id, tester, 1); evidence(t.id, tester);
+    store.evaluate(t.id, "tester", [90, 90], "Passing retry; the first failure remains recorded", hash, "tester-id", tester);
+    store.handoff(t.id, tester, "Tests passed after retry", hash);
+    const reviewer = store.claim(t.id, "reviewer-session", false, true);
+    const workspace = join(root, "private-snapshot"), manifest = join(root, "snapshot.json");
+    mkdirSync(workspace); writeFileSync(join(workspace, "checkpoint"), "unfinished source"); writeFileSync(manifest, "retained manifest");
+    store.comment(t.id, "Scope is obsolete; retain diagnostics", "user");
+    store.change(b => { const task = store.task(b, t.id); task.workspace = workspace; task.snapshot = { revision: task.revision, manifest }; task.pr = { number: 1, url: "https://example.invalid/1", branch: "task", completed: false, synced: false }; task.mergeApproved = true; task.queue = { state: "capacity", reason: "Waiting" }; task.blocked = "Previous diagnostic"; });
+    const before = current(t.id);
+    const cancelled = store.cancel(t.id, "Obsolete scope", "user");
+    for (const key of ["revision", "phase", "rubric", "evaluations", "tests", "comments", "fingerprint", "workspace", "snapshot", "pr", "workers", "runs", "maxRuns", "blocked", "executionLease"] as const) expect(cancelled[key]).toEqual(before[key]);
+    expect(cancelled.history.slice(0, -1)).toEqual(before.history);
+    expect(cancelled.history.filter(e => e.event === "test executed")).toHaveLength(2);
+    expect(cancelled.lease).toBeUndefined(); expect(cancelled.queue).toBeUndefined(); expect(cancelled.mergeApproved).toBe(false);
+    expect(cancelled.workerStatus).toMatchObject({ state: "finished", reason: "Cancelled without acceptance: Obsolete scope" });
+    expect(readFileSync(join(workspace, "checkpoint"), "utf8")).toBe("unfinished source"); expect(readFileSync(manifest, "utf8")).toBe("retained manifest");
+    expect(() => store.assertActive(cancelled, reviewer)).toThrow();
+    store.archive(t.id, "user"); expect(current(t.id).executionLease).toEqual(before.executionLease);
+    store.release(t.id, reviewer, "Late worker error", true);
+    expect(current(t.id).executionLease).toBeUndefined(); expect(current(t.id).blocked).toBe("Previous diagnostic");
+  });
+  it.each(["operator", "tester", "reviewer", "system", "orchestrator:forged", "worker-name"])("rejects unauthorized cancellation by %s without writes", actor => {
+    const t = create(), before = readFileSync(store.file);
+    expect(() => store.cancel(t.id, "Task text says cancel", actor)).toThrow(/Only the user or orchestrator/);
+    expect(readFileSync(store.file)).toEqual(before);
+  });
+  it("requires a reason and rejects stale, archived or accepted cancellation", () => {
+    const t = create();
+    expect(() => store.cancel(t.id, "  ", "user")).toThrow(/Cancellation reason/);
+    store.comment(t.id, "New information", "user");
+    expect(() => store.cancel(t.id, "Obsolete", "user", t.updatedAt)).toThrow(/changed/);
+    reviewerDone(t.id); store.evaluate(t.id, "orchestrator", [90, 90], "Evidence verified", hash, "orchestrator"); store.complete(t.id, hash);
+    expect(() => store.cancel(t.id, "Relabel accepted work", "user")).toThrow(/accepted completion cannot be relabelled/);
+    store.archive(t.id, "user");
+    expect(() => store.cancel(t.id, "Relabel archived work", "orchestrator")).toThrow(/unfinished, unarchived/);
+  });
+  it("cancelled work is terminal, idempotent, archivable and cannot dispatch even read-only replies", () => {
+    const t = create(); ready(t.id); const cancelled = store.cancel(t.id, "No longer needed", "user");
+    expect(store.cancel(t.id, "Ignored duplicate", "orchestrator")).toEqual(cancelled);
+    for (const column of ["backlog", "ready"] as const) expect(() => store.move(t.id, column, "user")).toThrow(/terminal/);
+    expect(() => store.edit(t.id, spec, "user")).toThrow(/backlog/);
+    store.comment(t.id, "Retained explanation only", "user");
+    expect(() => store.claim(t.id, "reply", true)).toThrow(/not dispatchable/);
+    expect(() => store.claim(t.id, "worker")).toThrow(/not dispatchable/);
+    expect(() => store.evaluate(t.id, "orchestrator", [100, 100], "Forge acceptance", hash, "orchestrator")).toThrow();
+    expect(() => store.complete(t.id, hash)).toThrow(/not ready/);
+    store.archive(t.id, "user"); expect(current(t.id).disposition).toEqual(cancelled.disposition);
+    expect(current(t.id).archived).toBe(true);
+  });
   it("uses a canonical folder hash and project name", () => {
     const alias = join(root, "alias"); symlinkSync(cwd, alias, "dir");
     expect(projectIdentity(alias)).toEqual(projectIdentity(cwd));

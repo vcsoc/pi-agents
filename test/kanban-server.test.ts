@@ -48,6 +48,23 @@ describe("loopback-only authenticated Kanban web server", () => {
     expect(snapshot.activity).toEqual(board.activity);
     abort.abort(); await reader.cancel().catch(() => {});
   });
+  it("explicit user cancellation records a reason and disposition without accepting forged scores", async () => {
+    const task = store.create(input, "orchestrator");
+    expect((await post({ action: "cancel", id: task.id, expectedUpdatedAt: task.updatedAt })).status).toBe(400);
+    const response = await post({ action: "cancel", id: task.id, expectedUpdatedAt: task.updatedAt, reason: "Superseded work", actor: "tester", evaluations: { orchestrator: { total: 100 } } });
+    expect(response.status).toBe(200);
+    const cancelled = store.task(store.read(), task.id);
+    expect(cancelled).toMatchObject({ column: "done", disposition: { kind: "cancelled", reason: "Superseded work", actor: "user" }, evaluations: {}, tests: [] });
+    expect(cancelled.history.at(-1)).toMatchObject({ actor: "user", event: "cancelled without acceptance" });
+    const board = await response.json(); expect(board.tasks[0].disposition).toEqual(cancelled.disposition);
+    expect((await post({ action: "move", id: task.id, column: "backlog", expectedUpdatedAt: cancelled.updatedAt })).status).toBe(400);
+  });
+  it("rejects stale cancellation instead of overwriting newer task context", async () => {
+    const task = store.create(input, "orchestrator"); store.comment(task.id, "Scope changed", "user");
+    expect((await post({ action: "cancel", id: task.id, expectedUpdatedAt: task.updatedAt, reason: "Stale intent" })).status).toBe(409);
+    expect(store.task(store.read(), task.id)).toMatchObject({ column: "backlog", evaluations: {} });
+    expect(store.task(store.read(), task.id).disposition).toBeUndefined();
+  });
   it("accepts task intake into Backlog without trusting forged execution state", async () => {
     const response = await post({ action: "create", task: { ...input, column: "done", evaluations: { orchestrator: { total: 100 } }, mergeApproved: true } });
     expect(response.status).toBe(200);

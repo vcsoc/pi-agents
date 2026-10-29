@@ -57,6 +57,7 @@ export async function startKanbanServer(controller: KanbanController | ReadOnlyK
         if (input.expectedUpdatedAt !== task.updatedAt) { send(res, 409, { error: "Task changed; reopen it to avoid overwriting newer work" }); return; }
         if (input.action === "comment") controller.store.comment(id, input.summary !== undefined ? { summary: text(input.summary, "Comment summary", 500), details: input.details ?? input.text } : text(input.text, "Comment", 200000), actor, input.expectedUpdatedAt);
         else if (input.action === "move") controller.store.move(id, input.column, actor, input.expectedUpdatedAt);
+        else if (input.action === "cancel") controller.cancelTask(id, text(input.reason, "Cancellation reason"), actor, input.expectedUpdatedAt);
         else if (input.action === "archive") controller.store.archive(id, actor, input.expectedUpdatedAt);
         else if (input.action === "edit") controller.store.edit(id, input.task as NewTask, actor, input.expectedUpdatedAt);
         else if (input.action === "approve-merge") controller.store.change(b => {

@@ -164,6 +164,43 @@ describe("Kanban dispatch polling", () => {
   });
 });
 describe("Kanban role dispatch and evidence", () => {
+  it("cancel tool immediately revokes workers, retains checkpoints and holds capacity until actual drain", async () => {
+    const id = await start(), worker = jobs[0], before = task(id), tool = controller.orchestratorTool();
+    writeFileSync(join(worker.cwd, "checkpoint.txt"), "retained unfinished work");
+    stop.mockImplementationOnce(() => {});
+    await tool.execute("root", { action: "cancel", id, notes: "Superseded by the current source" }, new AbortController().signal, undefined, {} as never);
+    expect(worker.signal.aborted).toBe(true); expect(stop).toHaveBeenCalledExactlyOnceWith(worker.record.id);
+    expect(task(id)).toMatchObject({ column: "done", disposition: { kind: "cancelled", actor: "orchestrator" }, revision: before.revision, snapshot: before.snapshot, workspace: before.workspace, executionLease: before.executionLease, tests: [], evaluations: {} });
+    expect(task(id).lease).toBeUndefined(); expect(readFileSync(join(worker.cwd, "checkpoint.txt"), "utf8")).toBe("retained unfinished work");
+    expect(() => worker.binding.assertAllowed("bash")).toThrow();
+    await expect(call(worker.binding, { action: "handoff", notes: "Late result" })).rejects.toThrow();
+    await expect(controller.complete(id)).rejects.toThrow();
+    const waiting = store.create(spec, "orchestrator"); store.move(waiting.id, "ready", "orchestrator");
+    expect(() => new KanbanStore(cwd, store.stateRoot).claim(waiting.id, "other-pi", false, true, 1)).toThrow(/capacity/);
+    store.comment(id, "Explain the cancellation later", "user"); await controller.tick();
+    expect(jobs.filter(j => j.binding.identity?.id === worker.binding.identity?.id)).toHaveLength(1);
+    await finish(0);
+    expect(task(id).executionLease).toBeUndefined(); expect(task(id).disposition?.kind).toBe("cancelled");
+    expect(task(id).blocked).toBeUndefined(); expect(task(id).evaluations).toEqual({});
+  });
+  it("another controller can cancel safely and the owning controller aborts on reconciliation", async () => {
+    const id = await start(), before = task(id);
+    const remote = new KanbanController(new KanbanStore(cwd, store.stateRoot), { spawn: vi.fn(), record: vi.fn(), stop: vi.fn(), steer: vi.fn(), validAgent: () => true, notify: vi.fn() });
+    try {
+      remote.cancelTask(id, "Obsolete in another Pi session", "user", before.updatedAt);
+      expect(task(id).executionLease).toEqual(before.executionLease);
+      expect(() => jobs[0].binding.assertAllowed("read")).toThrow();
+      await controller.tick(); expect(jobs[0].signal.aborted).toBe(true); expect(stop).toHaveBeenCalledWith("0");
+    } finally { await remote.close(); }
+  });
+  it("workers cannot request cancellation through their bound tool or the orchestrator tool", async () => {
+    const id = await start(), before = store.read();
+    expect(() => jobs[0].binding.assertAllowed("Kanban")).toThrow(/delegate or change/);
+    await expect(call(jobs[0].binding, { action: "cancel", notes: "Unauthorized" })).rejects.toThrow(/Unknown task action/);
+    expect(store.read()).toEqual(before);
+    await expect(controller.orchestratorTool().execute("root", { action: "cancel", id }, new AbortController().signal, undefined, {} as never)).rejects.toThrow(/Cancellation reason/);
+    expect(task(id).column).toBe("in progress");
+  });
   it("propagates the persisted identity into role prompts and tool responses", async () => {
     const id = await start(), binding = jobs[0].binding, identity = task(id).workers?.operator;
     expect(binding.identity).toEqual(identity); expect(binding.prompt).toContain(`Your name is ${identity?.name}`);
