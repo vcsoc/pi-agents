@@ -177,6 +177,20 @@ describe("tested snapshot integration", () => {
     await expect(controller.complete(id)).rejects.toThrow(/dirty\/untracked files are protected/);
     expect(readFileSync(join(cwd, name), "utf8")).toBe("caller dirty source");
   });
+  it("protects staged caller edits even when unstaged contents equal HEAD", async () => {
+    const original = readFileSync(join(cwd, "app.ts"));
+    writeFileSync(join(cwd, "app.ts"), "staged caller edit"); git("add", "app.ts");
+    writeFileSync(join(cwd, "app.ts"), original);
+    const index = readFileSync(join(cwd, ".git", "index"));
+    expect(git("diff", "HEAD", "--", "app.ts")).toBe("");
+    expect(git("diff", "--cached", "HEAD", "--", "app.ts")).not.toBe("");
+    const [id] = ready(); await controller.tick();
+    await accepted(id, path => writeFileSync(join(path, "app.ts"), "task must not replace caller work"));
+    await expect(controller.complete(id)).rejects.toThrow(/dirty\/untracked files are protected/);
+    expect(readFileSync(join(cwd, "app.ts"))).toEqual(original);
+    expect(readFileSync(join(cwd, ".git", "index"))).toEqual(index);
+    expect(task(id).column).toBe("review"); expect(task(id).tests).toHaveLength(1);
+  });
   it("checks reviewer/tester source tampering and never replaces a missing submitted snapshot", async () => {
     const [id] = ready(); await controller.tick(); await call(jobs[0], { action: "handoff", notes: "submit" }); await finish(jobs[0]);
     writeFileSync(join(jobs[1].cwd, "app.ts"), "tampered after submission");

@@ -39,6 +39,8 @@ export function createSnapshot(project: string, workspace: string, manifestFile:
   const before = capture(project);
   try {
     before.protected = git(project, ["diff", "--relative", "--name-only", "-z", "HEAD", "--", "."]).split("\0").filter(Boolean);
+    // Staged edits can be masked by unstaged contents equal to HEAD; both belong to the caller.
+    before.protected.push(...git(project, ["diff", "--cached", "--relative", "--name-only", "-z", "HEAD", "--", "."]).split("\0").filter(Boolean));
     before.protected.push(...git(project, ["ls-files", "--others", "--exclude-standard", "-z"]).split("\0").filter(Boolean));
   } catch {
     // Without a committed Git baseline, every existing file belongs to the caller.
