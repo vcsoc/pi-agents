@@ -1,0 +1,90 @@
+# Project Kanban
+
+Kanban is optional and off by default. It adds a durable project board and a task-based execution mode, not another name for the existing fleet view.
+
+## Enable And Open
+
+1. Open `/agents`, choose Settings, and turn Kanban on.
+2. Run `/agents kban`. Pi opens a browser and also prints the private URL.
+3. Ask the main agent to break your request into scopes, assign each task, define its acceptance rubric, and release the work.
+
+You can also set `"kanbanEnabled": true` in project or personal `subagents.json` and reload Pi. Disabling Kanban closes its local server and stops its workers. Enabling it stops existing untracked agents so subsequent work uses the board. A trusted project is required.
+
+The main agent becomes the orchestrator. It can inspect files and use the `Kanban` tool, but cannot implement changes through untracked bash/edit/write, normal Agent calls, or workflows while Kanban mode is on. Disable Kanban to return to ordinary orchestration. Optional tools are registered only when needed, so the default mode remains unchanged.
+
+## Task Lifecycle
+
+| Column | Purpose |
+| --- | --- |
+| backlog | Capture scope, acceptance criteria, agent assignment, and rubric. No worker executes the task. |
+| ready | Approved for its assigned operator to start or resume. |
+| in progress | The operator implements the assigned scope. |
+| review | The tester runs commands and scores the submitted revision; the reviewer independently reviews and scores it; the orchestrator performs final scoring. |
+| done | All completion gates passed. Comments can request read-only explanations; implementation changes require reopening via backlog/ready. |
+
+The orchestrator creates tasks using `Kanban create`, providing title, scope, assignee, and rubric criteria. Each criterion has a descriptive title and a positive percentage weight; weights must total 100. `testerAgent` and `reviewerAgent` default to `operate`. These are independent worker sessions with separate role-bound capabilities, even when they use the same agent definition/model. Use `inspect` or `design` as operators for read-only scopes, and `operate` for implementation and executable testing.
+
+Each new task starts in backlog. `Kanban ready` releases it. The task-specific `KanbanTask` tool is injected into its worker, including isolated workers, and no worker may edit other tasks or delegate around the board. An operator calls `handoff` to submit work to testing. The tester calls `test` for actual commands, then `evaluate` with one 0-100 score per criterion, completes any required PR initiation, and hands off. The reviewer evaluates independently, performs its PR stage when required, and hands off to the orchestrator. The orchestrator uses `Kanban evaluate` and `Kanban complete`.
+
+The following all block completion:
+
+- Missing, below-85%, or outdated orchestrator, tester, or reviewer scores. Exactly 85% passes; percentages are not rounded up for gating.
+- Missing passing test evidence, a failing latest execution of a recorded command, or a source snapshot different from the submitted revision.
+- Incomplete configured PR review/merge or failure to publish all three evaluations to the PR.
+- A paused, archived, reassigned, stale, or otherwise invalid task run.
+
+A tester can give a below-threshold evaluation after a failed test; it must include precise repair instructions. The evaluation and test output remain in task history, a clear comment is added, current scores are invalidated, and the operator receives the task in ready. Reviewer or orchestrator rejection follows the same repair cycle.
+
+Tests execute with a ten-minute command timeout and record command, exit code, bounded output, timestamp, and source fingerprint. Repeating the same command replaces its current result while preserving prior runs in history. Tests that modify source must be followed by resubmission and fresh testing, not certification of a different revision. Source fingerprints exclude private Pi/vault state, dependencies, and generated dist/coverage output. This verifies what was executed against which source snapshot; agents are still responsible for choosing meaningful tests and honestly evaluating the rubric. A successful `true` command is not a substitute for project-specific acceptance tests.
+
+## User Controls
+
+- Click a card to open the complete task modal, including comments, independent evaluations, test results, PR link, and audit history.
+- Add a comment to steer the currently running assigned worker. It is retained for subsequent roles. Idle completed tasks can dispatch a read-only response from the assigned agent; a comment alone never authorizes implementation changes.
+- Drag a task to backlog or choose Pause in backlog to invalidate its active run and evidence. Edit its title, scope, assignment, and rubric, then save. Release to ready after editing. An orchestrator cannot silently release a task you paused.
+- Only backlog and ready accept manual column changes. Dragging straight to review/done cannot bypass testing or scoring.
+- Right-click a card and select Archive / stop, or use the modal's archive action, at any stage. Archiving is terminal: no later worker or comment response is dispatched. It retains history and does not undo existing edits, commits, or PRs.
+- Archive completed scope becomes available when every non-archived task is done. Show archive makes historical tasks visible again. Comments can document cancellation, but never resume archived work.
+- Approve PR merge is available only for merge-policy tasks. It grants that task's reviewer permission to attempt the merge after passing gates. Scope changes/rework invalidate previous merge approval.
+
+Closing a browser tab does not stop workers. Moving work to backlog, archiving it, disabling Kanban, or ending the Pi session does. Cancellation blocks later tool calls and requests abortion of in-flight work; it cannot undo already-performed filesystem/network effects or guarantee termination of independently detached external processes.
+
+## PR Policies And Git
+
+The orchestrator chooses `prMode` from the user's request and repository instructions:
+
+| Mode | Required behavior |
+| --- | --- |
+| none | Work directly in the project; no GitHub operations. |
+| review | Tester creates/pushes a PR and records tests/scores; reviewer publishes a review and verifies required CI. Leave merge to the user/project process. |
+| merge | Same testing/review steps, plus explicit user merge approval and a verified completed merge before done. |
+
+PR tasks require a Git repository with an initial commit, an `origin` remote pointing to the intended writable repository, and authenticated `gh`. Task worktrees start from committed HEAD: existing tracked project changes must be committed first, and untracked files are not copied. Subfolder projects retain their relative location inside the task worktree. The task gets a persistent external Git worktree on `pi-kban/<task-id>`; operator, tester, and reviewer share that task worktree. The operator must commit its changes on that branch and leave it clean before submitting. The tester pushes the branch, opens or updates its PR, and includes the task scope, weighted rubric, test evidence, and tester score. The reviewer checks required CI, publishes its independent review, and performs the configured PR stage. The final PR body is updated with all three scores before the task becomes done.
+
+Agents normally share the same GitHub credential. The reviewer posts a comment review identifying its role; the extension does not pretend that this is an approval from a second GitHub account. Required human approvals and other branch protections still apply. Merge uses the expected head commit, never `--admin`, and is considered complete only after GitHub reports `MERGED`. Authentication, permission, missing required-check configuration, head changes, pending approvals, or merge failures stay visible instead of being marked done. A reviewer waiting for merge permission pauses; approving from the board allows the PR stage to resume.
+
+PR worktrees and task branches are retained for inspection/rework; archiving does not automatically remove them. In review-only mode, done means the requested PR/testing/review scope is complete, not that the branch has merged into the original checkout. Even after a remote merge, the original local checkout is not automatically pulled.
+
+Non-PR tasks share the opened project directory and are serialized through final orchestrator review to prevent overlapping task mutations. They are not isolated worktrees. Pausing a task does not revert its partial changes. PR tasks can run in their separate task worktrees concurrently subject to the normal agent concurrency pool.
+
+## Persistence, Budgets And Failure Recovery
+
+The board name is the canonical project folder's basename. Its ID is the SHA-256 hash of the canonical absolute folder path, so symlinked paths share a board and equally named folders in different locations do not. Moving a folder changes its ID; boards are machine/path-specific rather than a cross-machine sync service.
+
+State lives at `<Pi agent directory>/kanban/<project hash>/board.json`, outside the project and Git history. Writes use an exclusive process lock and atomic replacement. Task comments, transitions, tests, score evaluations, archive records, and failure reasons remain in history. Source revisions and role-bound run tokens reject stale workers. Different Pi sessions share the same durable state and cannot claim the same live task twice.
+
+Default limits are 12 worker runs per task and 40 turns per worker run. The orchestrator may set `maxRuns` between 3 and 100 at creation. These runs incur normal provider costs; there is no implied monetary cap. Automatic repair attempts consume the same run budget. An exhausted budget is visible and blocks more runs until you move the task through backlog then ready to authorize a new budget. Orchestrator requeues do not reset a used budget. Test command output is truncated to the last 16,000 characters in current evidence; complete command output should be preserved separately when required by the project.
+
+A worker that ends without a valid handoff becomes blocked rather than silently retrying. Read its transcript and task evidence before retrying through backlog/ready. Session shutdown marks interrupted work blocked; restarting Pi does not blindly replay a half-finished command. A lease from a process that no longer exists can be recovered. Corrupt state is reported, not silently reset. Back up the state directory for long-term history retention.
+
+## Web And Trust Boundary
+
+The server binds only to `127.0.0.1` on a random available port. Board APIs and the live SSE stream require a random bearer token, supplied in the browser URL fragment and retained only in that browser session. Requests with unexpected Host/Origin headers are rejected; API mutations require JSON, a matching task version, and bounded payloads. The frontend uses no third-party scripts/assets, renders task data as text rather than HTML, and reconnects its live stream after interruptions. Keep the private board URL private.
+
+Kanban gates govern cooperative agent sessions in this extension. They are not operating-system sandboxes, GitHub authorization boundaries, or protection against arbitrary trusted extensions or a malicious process with filesystem access. In particular, a full-tool operator/tester still runs with your local permissions. Use repository review, normal GitHub protections, and external sandboxing where stronger isolation is required.
+
+## Validation Commands
+
+Run `npm run check` for lint/typechecking/unit and integration tests. On a heavily loaded machine, `npm test -- --maxWorkers=4` avoids contention with the existing workflow metadata evaluation time limit.
+
+`npm run test:kanban:ui` builds and drives a real local Chromium through its debugging protocol, exercising live updates, desktop/mobile rendering, modal edits, comments, drag/drop, and archive controls. Install Chromium or set `CHROMIUM_BIN` to a compatible Chrome/Chromium executable. Set `KANBAN_UI_ARTIFACTS` to choose the screenshot directory; otherwise it uses a temporary directory. The fixture never releases real model work or creates a real GitHub PR. PR integration tests use local Git worktrees and simulated GitHub responses.

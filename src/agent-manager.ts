@@ -21,6 +21,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
 import { getAgentConfig } from "./agent-types.js";
+import type { KanbanBinding } from "./kanban/agent.js";
 import { assignHandle, handleBase } from "./mention.js";
 import { describeModel } from "./model-resolver.js";
 import type { AgentInvocation, AgentRecord, AgentTombstone, IsolationMode, MentionResolution, Pool, SubagentType, ThinkingLevel } from "./types.js";
@@ -171,6 +172,7 @@ interface SpawnArgs {
 }
 
 interface SpawnOptions {
+  kanban?: KanbanBinding;
   description: string;
   /**
    * Optional memorable name for this instance, becoming a second handle
@@ -375,6 +377,9 @@ async function shutdownChildSession(session: AgentSession | undefined): Promise<
 
 export class AgentManager {
   private agents = new Map<string, AgentRecord>();
+  private taskBindings = new WeakMap<AgentRecord, KanbanBinding>();
+  private spawnGuard?: (binding?: KanbanBinding) => void;
+  setSpawnGuard(guard: (binding?: KanbanBinding) => void) { this.spawnGuard = guard; }
   private cleanupInterval: ReturnType<typeof setInterval>;
   private onComplete?: OnAgentComplete;
   private onStart?: OnAgentStart;
@@ -512,6 +517,7 @@ export class AgentManager {
     // Validate before the queue branch — a queued spawn should fail at the
     // call, not minutes later at drain. Throw (not warn): programmatic callers
     // can fix and retry; the RPC layer converts throws into error envelopes.
+    this.spawnGuard?.(options.kanban);
     assertValidSpawnCwd(options.cwd);
 
     const id = randomUUID().slice(0, 17);
@@ -559,6 +565,7 @@ export class AgentManager {
       rootSessionId: options.rootSessionId,
     };
     this.agents.set(id, record);
+    if (options.kanban) this.taskBindings.set(record, options.kanban);
     // After the insert, so `takenHandles()` already counts this record's own
     // handle — a spawn named after its own type gets `inspect-2`, not a
     // duplicate `inspect` that would make resolution ambiguous.
@@ -708,6 +715,7 @@ export class AgentManager {
     record: AgentRecord,
     { pi, ctx, type, prompt, options }: SpawnArgs,
   ) {
+    this.spawnGuard?.(options.kanban);
     // Re-validate a caller-supplied cwd: queued spawns can start minutes after
     // spawn()'s check, and the directory may be gone by then (TOCTOU). Same
     // curated errors; drainQueue parks a throw on the record as an error.
@@ -798,9 +806,11 @@ export class AgentManager {
     else this.armParentAbort(record, options.signal);
     const detach = () => this.detachParentAbort(record);
 
+    this.spawnGuard?.(options.kanban);
     const promise = runAgent(ctx, type, prompt, {
       pi,
       agentId: id,
+      kanban: options.kanban,
       model: options.model,
       maxTurns: options.maxTurns,
       isolated: options.isolated,
@@ -818,7 +828,7 @@ export class AgentManager {
       cwd: worktreeCwd ?? customCwd,
       // Set iff a worktree was created (see above) — names the directory the
       // copy came from, so the prompt can tell the agent not to work there.
-      worktreeBase: worktreeCwd ? baseCwd : undefined,
+      worktreeBase: worktreeCwd ? baseCwd : options.kanban && customCwd && customCwd !== ctx.cwd ? ctx.cwd : undefined,
       configCwd: options.configCwd ?? (customCwd !== undefined ? ctx.cwd : undefined),
       signal: record.abortController!.signal,
       onToolActivity: (activity) => {
@@ -1179,6 +1189,7 @@ export class AgentManager {
   ): Promise<AgentRecord | undefined> {
     const record = this.agents.get(id);
     if (!record?.session) return undefined;
+    this.spawnGuard?.(this.taskBindings.get(record));
 
     // Background resume: settle asynchronously and notify on completion exactly
     // like a background spawn, returning immediately with the record still

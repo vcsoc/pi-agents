@@ -26,6 +26,7 @@ import { runInChildSessionContext } from "./child-context.js";
 import { buildParentContext, extractText } from "./context.js";
 import { DEFAULT_AGENTS } from "./default-agents.js";
 import { detectEnv } from "./env.js";
+import { bindKanbanGate, type KanbanBinding, kanbanGate } from "./kanban/agent.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { enforceParentSessionModel, isParentModelInheritanceEnabled, requireParentModel } from "./model-inheritance.js";
 import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager } from "./nested-tools.js";
@@ -451,6 +452,7 @@ export interface ToolActivity {
 }
 
 export interface RunOptions {
+  kanban?: KanbanBinding;
   /** ExtensionAPI instance — used for pi.exec() instead of execSync. */
   pi: ExtensionAPI;
   /** Manager-assigned id; suffixes session name to disambiguate parallel spawns (e.g. `inspect#a1b2c3d4`). */
@@ -863,7 +865,7 @@ export async function runAgent(
           return {
             ...base,
             extensions: base.extensions.filter((e) => {
-              if (e.path === `<inline:${SCOPE_GATE_NAME}>`) return true; // ours, not the agent's
+              if (e.path === `<inline:${SCOPE_GATE_NAME}>` || e.path === "<inline:pi-agents-kanban-gate>") return true; // ours, not the agent's
               const canons = extensionCanonicalNames(e.path);
               if (canons.some((n) => excludeNames.has(n))) return false; // exclude wins
               return loadAll || canons.some((n) => keepNames.has(n));
@@ -903,6 +905,7 @@ export async function runAgent(
       { name: "mcp", factory: createMcpExtension(), builtin: true, replaceable: true },
       // Under `noExtensions` the static allowlist gates the registry itself.
       ...(noExtensions ? [] : [scopeGateExtension(nestedCallGate)]),
+      ...(options.kanban ? [kanbanGate(options.kanban)] : []),
     ],
     // Mirrors pi's CLI: `--no-mcp` keeps MCP out of subagents too, and `--no-extensions`
     // keeps all the built-ins out. Discovered extensions still follow `extensions:`.
@@ -920,7 +923,7 @@ export async function runAgent(
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    systemPromptOverride: () => systemPrompt,
+    systemPromptOverride: () => systemPrompt + (options.kanban ? "\n\n" + options.kanban.prompt : ""),
     appendSystemPromptOverride: () => [],
   });
   await runInChildSessionContext(() => loader.reload());
@@ -1018,7 +1021,7 @@ export async function runAgent(
   const nestedRuntime = options.nestedRuntime && options.nestedRuntime.depth < effectiveMaxDepth
     ? options.nestedRuntime
     : undefined;
-  const nestedTools = agentConfig?.allowedSubagents && nestedRuntime && !isolated
+  const nestedTools = agentConfig?.allowedSubagents && nestedRuntime && !isolated && !options.kanban
     ? createNestedSubagentTools({
         manager: nestedRuntime.manager,
         pi: options.pi,
@@ -1040,6 +1043,8 @@ export async function runAgent(
     ? [createStructuredOutputTool(options.structuredOutput, structuredCapture)]
     : [];
   const structuredToolNames = new Set(structuredTools.map(tool => tool.name));
+  const kanbanTools = options.kanban ? [options.kanban.tool] : [];
+  const kanbanToolNames = kanbanTools.map(tool => tool.name);
   // Re-admitted together at every gate below. Kept as one set so a new injected
   // tool cannot be added to some of the three gates and forgotten at the rest.
   //
@@ -1051,6 +1056,7 @@ export async function runAgent(
   const readmitToolNames = new Set([
     ...[...nestedToolNames].filter(name => !disallowedSet?.has(name)),
     ...structuredToolNames,
+    ...kanbanToolNames,
   ]);
 
   // ─── Tool scoping ───────────────────────────────────────────────────────
@@ -1097,12 +1103,13 @@ export async function runAgent(
       // satisfy it would make the request unsatisfiable by construction rather
       // than merely restricted.
       ...structuredToolNames,
+      ...kanbanToolNames,
     ];
   } else {
     // Deny the orchestration tools EXCEPT the nested ones this agent opted into —
     // those are injected as customTools and must survive the registry gate.
     const denyTools = new Set<string>(
-      EXCLUDED_TOOL_NAMES.filter((t) => !nestedToolNames.has(t)),
+      EXCLUDED_TOOL_NAMES.filter((t) => !nestedToolNames.has(t) && !kanbanToolNames.includes(t)),
     );
     // Keep only the built-ins the agent asked for — deny the rest.
     for (const name of BUILTIN_TOOL_NAMES) {
@@ -1112,7 +1119,7 @@ export async function runAgent(
       // disallowed_tools wins even over an opt-in nested tool of the same name.
       // Not over StructuredOutput, though — see the allowlist branch above.
       for (const name of disallowedSet) {
-        if (!structuredToolNames.has(name)) denyTools.add(name);
+        if (!structuredToolNames.has(name) && !kanbanToolNames.includes(name)) denyTools.add(name);
       }
     }
     sessionExcludeTools = [...denyTools];
@@ -1160,7 +1167,7 @@ export async function runAgent(
     ...(parentModelRuntime !== undefined && { modelRuntime: parentModelRuntime as never }),
     model,
     tools: sessionTools,
-    customTools: [...nestedTools, ...structuredTools],
+    customTools: [...nestedTools, ...structuredTools, ...kanbanTools],
     resourceLoader: loader,
   };
   if (sessionExcludeTools) {
@@ -1208,6 +1215,7 @@ export async function runAgent(
     });
   }
 
+  if (options.kanban) bindKanbanGate(session, options.kanban);
   await enforceParentSessionModel(session, ctx.model);
   options.onSessionCreated?.(session);
 

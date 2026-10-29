@@ -226,6 +226,37 @@ beforeEach(() => {
 });
 
 describe("agent-runner final output capture", () => {
+  it("injects task controls and a persistent task gate even into isolated workers", async () => {
+    const { session } = createSession("TASK");
+    createAgentSession.mockResolvedValue({ session });
+    let paused = false;
+    const kanban = {
+      prompt: "Work only on the assigned ready task",
+      tool: { name: "KanbanTask" } as any,
+      assertAllowed: () => { if (paused) throw new Error("Task archived"); },
+    };
+    await runAgent(ctx, "inspect", "Work", { pi, isolated: true, kanban });
+    const opts = createAgentSession.mock.calls[0][0];
+    expect(opts.customTools).toContain(kanban.tool);
+    expect(opts.tools).toContain("KanbanTask");
+    const loader = defaultResourceLoaderCtor.mock.calls[0][0];
+    expect(loader.extensionFactories.some((e: any) => e.name === "pi-agents-kanban-gate")).toBe(true);
+    expect(await loader.systemPromptOverride()).toContain(kanban.prompt);
+    paused = true;
+    expect(await session.agent.beforeToolCall!({ toolCall: { name: "bash" } })).toEqual({ block: true, reason: "Error: Task archived" });
+  });
+
+  it("keeps the internal task gate when a custom agent narrows its extensions", async () => {
+    const { session } = createSession("TASK"); createAgentSession.mockResolvedValue({ session });
+    vi.mocked(getConfig).mockReturnValueOnce(makeConfig({ extensions: ["allowed-extension"] }));
+    const kanban = { prompt: "Task scope", tool: { name: "KanbanTask" } as any, assertAllowed: () => {} };
+    await runAgent(ctx, "inspect", "Work", { pi, kanban });
+    const loader = defaultResourceLoaderCtor.mock.calls[0][0];
+    const gated = { path: "<inline:pi-agents-kanban-gate>", tools: new Map() };
+    const other = { path: "/tmp/unlisted/index.ts", tools: new Map() };
+    expect(loader.extensionsOverride({ extensions: [gated, other], errors: [], runtime: {} }).extensions).toEqual([gated]);
+  });
+
   it("returns the final assistant text even when no text_delta events were streamed", async () => {
     const { session } = createSession("LOCKED");
     createAgentSession.mockResolvedValue({ session });

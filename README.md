@@ -281,6 +281,24 @@ Use `operate`, `inspect`, and `design` in `subagent_type`, workflow `agentType`,
 
 Default agents can be **ejected** (`/agents` → select agent → Eject) to export them as `.md` files for customization, **overridden** by creating a `.md` file with the same name (e.g. `.pi/agents/operate.md`), or **disabled** per-project with `enabled: false` frontmatter.
 
+## Project Kanban (Opt-In)
+
+Enable **Kanban** in `/agents` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`), then run:
+
+```text
+/agents kban
+```
+
+The browser board shows **backlog**, **ready**, **in progress**, **review**, and **done**, with live updates. The orchestrator creates a task for each work scope, assigns its operator, defines a weighted rubric, and releases it to ready. Separate tester and reviewer sessions evaluate the submitted work; the orchestrator independently scores it before completion. Every role must score at least **85%**, and real passing test-command evidence is required. A lower score returns actionable fix comments to the operator.
+
+Click a task for its scope, rubric, scores, test output, comments, PR, and history. Comments steer active workers; completed tasks can receive read-only responses. Drag a task to backlog to stop and edit it, then release it to ready to resume. Only you can release a task you paused. Right-click a card to archive and cancel future work, or archive the completed scope when every active task is done. Archiving does not undo edits or delete history.
+
+Boards are named after the project folder and identified by its canonical-path SHA-256 hash. They persist outside the project in `~/.pi/agent/kanban/` (or your configured Pi agent directory). The local web server uses a private URL token and listens only on loopback.
+
+If PRs are part of the requested SDLC, tasks can require PR review or merge. The tester pushes the task branch and opens a PR with rubric/testing evidence; the reviewer publishes its independent review. Merging requires a separate **Approve PR merge** action from you, passing required checks, and a matching head commit. Branch protections are never bypassed. All three scores are synchronized into the PR before done.
+
+See [the Kanban guide](docs/kanban.md) for budgets, isolation, PR prerequisites, and safety limits. This feature creates real agent runs when tasks are released; it is not just a visual checklist.
+
 ## Custom Agents
 
 Define custom agent types by creating `.md` files. The frontmatter `name:` is the `subagent_type` and dispatch identity, falling back to the filename when absent; `display_name` only changes the UI label. Claiming a default agent's name overrides it.
@@ -721,6 +739,7 @@ Most changes apply to new agents immediately. Options that change which tools or
 | `showModel` | `false` | Add model and reasoning level to the widget. Results and the viewer already show these. |
 | `viewerMarkdown` | `assistant` | `off`: plain text. `assistant`: format replies only. `all`: format tool results too; this can change how logs/diffs look. Press `m` in the viewer to switch. |
 | `fleetView` | `true` | Show the selectable main-chat/agent list below the editor. |
+| `kanbanEnabled` | `false` | Enable the persistent project Kanban board and automatic task workers. Open `/agents kban`; completion requires real tests and three independent rubric scores of at least 85%. Enabling stops untracked agents; disabling stops board workers. |
 | `widgetMode` | `background` | `all`: every agent. `background`: background only. `off`: no progress widget. |
 | `toolDescriptionMode` | `full` | `full`: detailed Agent help. `compact`: shorter help for smaller models. `custom`: your own help file. Applies next session. |
 

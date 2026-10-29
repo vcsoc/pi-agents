@@ -36,6 +36,30 @@ const resolvedRun = () =>
     steered: false,
   });
 
+describe("AgentManager Kanban capabilities", () => {
+  let manager: AgentManager;
+  afterEach(() => manager?.dispose());
+
+  it("rejects untracked spawns before running a worker", () => {
+    manager = new AgentManager();
+    manager.setSpawnGuard(binding => { if (!binding) throw new Error("Create a Kanban task first"); });
+    expect(() => manager.spawn(mockPi, mockCtx, "operate", "untracked", { description: "untracked" })).toThrow(/Kanban/);
+    expect(manager.listAgents()).toHaveLength(0);
+  });
+
+  it("forwards a role-bound task capability and rechecks it on resume", async () => {
+    manager = new AgentManager(); resolvedRun();
+    let archived = false;
+    const binding = { prompt: "Task scope", tool: {} as any, assertAllowed: () => { if (archived) throw new Error("Archived task"); } };
+    manager.setSpawnGuard(capability => { if (!capability) throw new Error("Task required"); capability.assertAllowed("KanbanTask"); });
+    const id = manager.spawn(mockPi, mockCtx, "operate", "task", { description: "task", kanban: binding });
+    await manager.getRecord(id)!.promise;
+    expect(vi.mocked(runAgent).mock.calls.at(-1)?.[3].kanban).toBe(binding);
+    archived = true;
+    await expect(manager.resume(id, "continue")).rejects.toThrow(/Archived/);
+  });
+});
+
 describe("AgentManager — Bug 1 race condition (resultConsumed vs onComplete)", () => {
   let manager: AgentManager;
 

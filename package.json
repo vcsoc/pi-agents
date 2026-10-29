@@ -39,6 +39,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:e2e": "vitest run e2e --reporter=verbose",
+    "test:kanban:ui": "npm run build && node test/ui/kanban-browser.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "biome check src/ test/",
     "lint:fix": "biome check --fix src/ test/",

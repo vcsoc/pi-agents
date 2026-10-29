@@ -126,6 +126,8 @@ export interface SubagentsSettings {
    * the list never registers and the global key handler never captures input.
    */
   fleetView?: boolean;
+  /** Opt-in project Kanban, automatic task workers, and /agents kban. Defaults to false. */
+  kanbanEnabled?: boolean;
   /**
    * Whether `@handle message` typed at the prompt is routed to that subagent
    * instead of the main model, and whether `@` offers running agents alongside
@@ -358,6 +360,7 @@ export interface SettingsAppliers {
   setDisableDefaultAgents: (b: boolean) => void;
   setToolDescriptionMode: (mode: ToolDescriptionMode) => void;
   setFleetView: (b: boolean) => void;
+  setKanbanEnabled?: (b: boolean) => void;
   setAgentMentions: (mode: AgentMentionMode) => void;
   setRememberAgents: (b: boolean) => void;
   setWidgetMode: (mode: WidgetMode) => void;
@@ -474,6 +477,7 @@ function sanitize(raw: unknown): SubagentsSettings {
   if (typeof r.toolDescriptionMode === "string" && VALID_TOOL_DESCRIPTION_MODES.has(r.toolDescriptionMode)) {
     out.toolDescriptionMode = r.toolDescriptionMode as ToolDescriptionMode;
   }
+  if (typeof r.kanbanEnabled === "boolean") out.kanbanEnabled = r.kanbanEnabled;
   if (typeof r.fleetView === "boolean") {
     out.fleetView = r.fleetView;
   }
@@ -592,6 +596,7 @@ export function applySettings(s: SubagentsSettings, appliers: SettingsAppliers):
   if (typeof s.disableDefaultAgents === "boolean") appliers.setDisableDefaultAgents(s.disableDefaultAgents);
   if (s.toolDescriptionMode) appliers.setToolDescriptionMode(s.toolDescriptionMode);
   if (typeof s.fleetView === "boolean") appliers.setFleetView(s.fleetView);
+  if (typeof s.kanbanEnabled === "boolean") appliers.setKanbanEnabled?.(s.kanbanEnabled);
   if (s.agentMentions) appliers.setAgentMentions(s.agentMentions);
   if (typeof s.rememberAgents === "boolean") appliers.setRememberAgents(s.rememberAgents);
   if (s.widgetMode) appliers.setWidgetMode(s.widgetMode);

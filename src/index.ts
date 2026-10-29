@@ -10,6 +10,7 @@
  *   /agents                 — Interactive agent management menu
  */
 
+import { spawn as spawnBrowser } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
@@ -28,6 +29,9 @@ import { type RpcHandle, registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
 import { GroupJoinManager } from "./group-join.js";
 import { isolationParam, resolveAgentInvocationConfig, resolveJoinMode } from "./invocation-config.js";
+import { KANBAN_GUIDELINES, KanbanController } from "./kanban/controller.js";
+import { type KanbanWebServer, startKanbanServer } from "./kanban/server.js";
+import { KanbanStore } from "./kanban/store.js";
 import { describeMention, handleBase, isReservedHandle, parseMention, resolveHandleToType, stripAgentPrefix } from "./mention.js";
 import { runMentionClone } from "./mention-clone.js";
 import { isParentModelInheritanceEnabled, modelParam, setParentModelInheritance } from "./model-inheritance.js";
@@ -400,6 +404,9 @@ export default function (pi: ExtensionAPI) {
   // the initial load, which happens hundreds of lines before settings are applied.
   const bootSettings = loadSettings(process.cwd());
   let strictAgentFiles = bootSettings.strictAgentFiles === true;
+  let kanbanEnabled = false;
+  let kanban: KanbanController | undefined;
+  let kanbanWeb: KanbanWebServer | undefined;
 
   // Seed the package gates from the same merged settings, before the first load
   // below reads them. `applyAndEmitLoaded` sets them again through the appliers;
@@ -1146,6 +1153,7 @@ export default function (pi: ExtensionAPI) {
   // On shutdown, abort all agents immediately and clean up.
   // If the session is going down, there's nothing left to consume agent results.
   pi.on("session_shutdown", async () => {
+    await stopKanban();
     rpcHandle?.unsubSpawn();
     rpcHandle?.unsubStop();
     rpcHandle?.unsubPing();
@@ -1567,6 +1575,61 @@ export default function (pi: ExtensionAPI) {
   }
 
   // Apply persisted settings on startup and emit `subagents:settings_loaded`.
+  async function stopKanban() {
+    const controller = kanban, web = kanbanWeb;
+    kanban = undefined; kanbanWeb = undefined;
+    const results = await Promise.allSettled([controller?.close(), web?.close()]);
+    for (const result of results) if (result.status === "rejected") currentCtx?.ui.notify(`Kanban cleanup: ${String(result.reason)}`, "warning");
+  }
+
+  function setKanbanEnabled(enabled: boolean) {
+    if (enabled === kanbanEnabled) return;
+    kanbanEnabled = enabled;
+    if (enabled) manager.abortAll();
+    else {
+      if (kanban) pi.registerTool({ ...kanban.orchestratorTool(), exposure: "hidden" });
+      void stopKanban().catch(error => currentCtx?.ui.notify(String(error), "error"));
+    }
+  }
+
+  function ensureKanban(ctx: ExtensionContext): KanbanController {
+    if (!kanbanEnabled) throw new Error("Kanban is off. Enable Kanban in /agents > Settings first.");
+    if (!ctx.isProjectTrusted()) throw new Error("Kanban workers require a trusted project.");
+    if (!kanban) {
+      const store = new KanbanStore(ctx.cwd, join(getAgentDir(), "kanban"));
+      kanban = new KanbanController(store, {
+        spawn: (type, prompt, binding, cwd, signal) => spawnTopLevel(pi, ctx, type, prompt, {
+          description: "Kanban: " + type,
+          kanban: binding, cwd, configCwd: ctx.cwd, isBackground: true, signal, maxTurns: 40,
+        }),
+        record: id => manager.getRecord(id),
+        stop: id => { manager.abort(id); },
+        steer: (id, message) => { manager.steer(id, message); },
+        validAgent: type => { const resolution = resolveSpawnType(type); return resolution.ok && !resolution.fellBackFrom && !!getAgentConfig(resolution.type); },
+        notify: message => pi.sendMessage({ customType: "kanban-update", content: message, display: true }, { triggerTurn: true, deliverAs: "followUp" }),
+      });
+      pi.registerTool(kanban.orchestratorTool());
+      kanban.start();
+    }
+    return kanban;
+  }
+
+  manager.setSpawnGuard(binding => {
+    if (kanbanEnabled && !binding) throw new Error("Kanban is enabled: create and release a board task instead of starting untracked work.");
+    binding?.assertAllowed("KanbanTask");
+  });
+
+  pi.on("before_agent_start", (_event, ctx) => {
+    if (!kanbanEnabled) return;
+    ensureKanban(ctx);
+    return { message: { customType: "kanban-policy", content: KANBAN_GUIDELINES, display: false } };
+  });
+  pi.on("tool_call", event => {
+    if (kanbanEnabled && !["Kanban", "read", "grep", "find", "ls", "tool_search"].includes(event.toolName)) {
+      return { block: true, reason: "Kanban is enabled. Delegate executable work through assigned ready tasks; use Kanban to manage scopes, comments, and evidence." };
+    }
+  });
+
   // Global + project merged; missing → defaults; corrupt file emits a warning
   // to stderr and falls back to defaults.
   applyAndEmitLoaded(
@@ -1584,6 +1647,7 @@ export default function (pi: ExtensionAPI) {
       setDisableDefaultAgents: setDisableDefaultAgents,
       setToolDescriptionMode: setToolDescriptionMode,
       setFleetView: setFleetViewEnabled,
+      setKanbanEnabled,
       setAgentMentions: setAgentMentionMode,
       setRememberAgents,
       setWidgetMode: setWidgetMode,
@@ -3709,6 +3773,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
       disableDefaultAgents: isDefaultsDisabled(),
       toolDescriptionMode: getToolDescriptionMode(),
       fleetView: isFleetViewEnabled(),
+      kanbanEnabled,
       agentMentions: getAgentMentionMode(),
       rememberAgents: getRememberAgents(),
       widgetMode: getWidgetMode(),
@@ -3962,6 +4027,13 @@ Write the file using the write tool. Only write the file, nothing else.`;
           values: ["off", "assistant", "all"],
         },
         {
+          id: "kanbanEnabled",
+          label: "Kanban",
+          description: "Project web board at /agents kban. Runs assigned operator/tester/reviewer tasks with evidence gates. Enabling stops untracked agents; disabling stops board workers.",
+          currentValue: kanbanEnabled ? "on" : "off",
+          values: ["on", "off"],
+        },
+        {
           id: "fleetView",
           label: "Fleet view",
           description: "Show the main chat and active agents below the editor. At an empty prompt, press down/left to select an agent, then Enter to view it.",
@@ -4155,6 +4227,9 @@ Write the file using the write tool. Only write the file, nothing else.`;
       } else if (id === "viewerMarkdown") {
         setViewerMarkdown(value as ViewerMarkdownMode);
         notifyApplied(ctx, `Viewer markdown set to ${value}`);
+      } else if (id === "kanbanEnabled") {
+        setKanbanEnabled(value === "on");
+        notifyApplied(ctx, `Kanban ${kanbanEnabled ? "enabled. Open /agents kban" : "disabled; board workers stopped"}`);
       } else if (id === "fleetView") {
         const enabled = value === "on";
         setFleetViewEnabled(enabled);
@@ -4299,7 +4374,18 @@ Write the file using the write tool. Only write the file, nothing else.`;
 
   pi.registerCommand("agents", {
     description: "Manage agents",
-    handler: async (_args, ctx) => { await showAgentsMenu(ctx); },
+    handler: async (args, ctx) => {
+      if (args.trim() !== "kban") { await showAgentsMenu(ctx); return; }
+      try {
+        const controller = ensureKanban(ctx);
+        kanbanWeb ??= await startKanbanServer(controller);
+        ctx.ui.notify(`Kanban: ${kanbanWeb.url}`, "info");
+        const launcher = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open";
+        const browser = spawnBrowser(launcher, [kanbanWeb.url], { detached: true, stdio: "ignore" });
+        browser.on("error", () => ctx.ui.notify("Could not open a browser automatically. Open the Kanban URL manually.", "warning"));
+        browser.unref();
+      } catch (e) { ctx.ui.notify(e instanceof Error ? e.message : String(e), "error"); }
+    },
   });
 
   /**
