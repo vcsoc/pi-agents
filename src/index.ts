@@ -27,6 +27,7 @@ import { inChildSessionContext } from "./child-context.js";
 import { CompletionOutbox, NOTIFICATION_HOLD_MS } from "./completion-outbox.js";
 import { type RpcHandle, registerRpcHandlers } from "./cross-extension-rpc.js";
 import { loadCustomAgents } from "./custom-agents.js";
+import { runAgentsDemo } from "./demo.js";
 import { GroupJoinManager } from "./group-join.js";
 import { isolationParam, resolveAgentInvocationConfig, resolveJoinMode } from "./invocation-config.js";
 import { KANBAN_GUIDELINES, KanbanController } from "./kanban/controller.js";
@@ -4379,9 +4380,58 @@ Write the file using the write tool. Only write the file, nothing else.`;
     ctx.ui.notify(message, level);
   }
 
+  let demoRunning = false;
   pi.registerCommand("agents", {
-    description: "Manage agents",
+    description: "Manage agents; /agents demo runs a bounded four-agent demonstration",
     handler: async (args, ctx) => {
+      if (args.trim() === "demo") {
+        if (demoRunning) { ctx.ui.notify("An agents demo is already running.", "warning"); return; }
+        demoRunning = true;
+        const started = performance.now();
+        try {
+          if (kanbanEnabled) {
+            const controller = ensureKanban(ctx);
+            const generation = kanbanWebGeneration;
+            if (!kanbanWeb) {
+              const opened = await startKanbanServer(controller);
+              if (!kanbanEnabled || generation !== kanbanWebGeneration) await opened.close();
+              else if (kanbanWeb) await opened.close();
+              else kanbanWeb = opened;
+            }
+            if (kanbanEnabled && kanbanWeb) {
+              const launcher = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open";
+              const browser = spawnBrowser(launcher, [kanbanWeb.url], { detached: true, stdio: "ignore" });
+              browser.on("error", () => ctx.ui.notify(`Open demo board: ${kanbanWeb?.url}`, "info"));
+              browser.unref();
+              ctx.ui.notify(`Demo live harness runs: ${kanbanWeb.url}`, "info");
+            }
+          }
+          const result = await runAgentsDemo({
+            signal: ctx.signal,
+            report: message => ctx.ui.notify(message, "info"),
+            run: async (name, prompt, signal) => {
+              const { record } = await manager.spawnAndWait(pi, ctx, "operate", prompt, {
+                description: name, isolated: true, inheritContext: false, thinkingLevel: "minimal", maxTurns: 2, signal,
+                kanban: {
+                  prompt: "Native read-only demonstration, not a managed Kanban task. Answer the assigned dummy question directly. Never use tools.",
+                  assertAllowed: toolName => {
+                    // The manager probes this capability before spawning. It is not registered as a demo tool.
+                    if (toolName !== "KanbanTask") throw new Error("Demo agents cannot execute tools");
+                  },
+                  tool: defineTool({ name: "DemoNoTools", label: "Demo read-only guard", description: "Unavailable during demo", parameters: Type.Object({}), execute: async () => { throw new Error("Demo agents cannot execute tools"); } }),
+                },
+              });
+              record.resultConsumed = true;
+              return { status: record.status, result: record.result };
+            },
+          }, Math.max(1, 30_000 - (performance.now() - started)));
+          const message = `${result.message} Elapsed ${(result.elapsedMs / 1000).toFixed(1)}s.`;
+          pi.sendMessage({ customType: "agents-demo", content: message, display: true }, { triggerTurn: false });
+          ctx.ui.notify(message, result.passed ? "info" : "warning");
+        } catch (error) { ctx.ui.notify(`Demo failed: ${String(error)}`, "error"); }
+        finally { demoRunning = false; }
+        return;
+      }
       if (args.trim() === "tasks" || args.trim().startsWith("tasks ")) {
         try {
           const controller = ensureKanban(ctx);

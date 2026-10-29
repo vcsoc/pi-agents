@@ -283,6 +283,12 @@ Default agents can be **ejected** (`/agents` → select agent → Eject) to expo
 
 ## Project Kanban (Opt-In)
 
+### Quick Demo
+
+Run `/agents demo` for a bounded native demonstration: two parallel workers answer tiny dummy questions, a third agent independently tests and scores their outputs, and a fourth reviews the results. Workers have a 15-second target and the full run has a 30-second deadline. Slow providers or occupied agent slots can produce a truthful timeout instead of a successful demonstration. The command cancels unfinished demo work on failure or deadline; it never changes project files or marks managed tasks Done.
+
+When the optional Kanban interface is enabled, the command starts/opens the project board automatically. Watch the four agents in **Live Harness Runs**. With the interface off, the same demonstration runs natively and reports its result in Pi. Demo scores are illustrative, not managed-task certification. Only one demo runs at a time.
+
 **The native Pi harness always owns execution.** Kanban is an optional live interface over the same harness task service, not a replacement mode. Agent, workflows, ordinary tools, results and steering remain available with it on or off. Toggling it never stops agents or discards their sessions. The native `Kanban` task tool and `/agents tasks` work without the web interface in trusted projects.
 
 Enable **Kanban** in `/agents` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`), then run:

@@ -103,6 +103,21 @@ async function spawnBackground(
 }
 
 describe("background completion notification wiring", () => {
+  it("runs /agents demo natively with four bounded tool-free agents and no certification", async () => {
+    vi.mocked(runAgent).mockImplementation(async (_ctx, _type, prompt, options) => {
+      expect(options.kanban).toBeDefined();
+      expect(() => options.kanban!.assertAllowed("bash")).toThrow(/cannot execute tools/);
+      return { ...completedRun(), responseText: prompt.includes("Calculate 2 + 2") ? "4" : prompt.includes("Reverse the letters") ? "tac" : '{"score":100,"passed":true}' };
+    });
+    const { pi, handlers } = makePi();
+    subagentsExtension(pi);
+    const command = vi.mocked((pi as any).registerCommand).mock.calls.find((call: any[]) => call[0] === "agents") as any;
+    try {
+      await command[1].handler("demo", makeHeadlessCtx());
+      expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "agents-demo", content: expect.stringContaining("PASS: two workers") }), { triggerTurn: false });
+      expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining("not managed certification") }), { triggerTurn: false });
+    } finally { await handlers.get("session_shutdown")?.(); }
+  });
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
