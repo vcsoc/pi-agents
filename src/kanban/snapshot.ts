@@ -1,11 +1,34 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sourceFingerprint, sourceNames } from "./execution.js";
+import type { Board, Task } from "./store.js";
 
 interface Entry { hash: string; mode: number }
 interface Manifest { files: Record<string, Entry>; protected: string[] }
+export interface IntegratedProvenance { taskId: string; revision: number; workspace: string; manifest: string; fingerprint: string; paths: string[] }
+/** Read-only provenance lookup under the caller's existing board completion lock. */
+function integratedProvenance(project: string, workspace: string, manifest: string, fingerprint: string): IntegratedProvenance[] {
+  const file = join(dirname(manifest), "board.json");
+  if (!existsSync(file)) return [];
+  const board = JSON.parse(readFileSync(file, "utf8")) as Board;
+  if (board.version !== 1 || realpathSync(board.projectPath) !== realpathSync(project) || board.id !== createHash("sha256").update(realpathSync(project)).digest("hex")) return [];
+  const assessed = (t: Task) => !!t.fingerprint && ["tester", "reviewer", "orchestrator"].every(role => {
+    const e = t.evaluations[role as keyof typeof t.evaluations];
+    return e && e.total >= 85 && e.revision === t.revision && e.fingerprint === t.fingerprint;
+  }) && t.tests.length > 0 && t.tests.every(e => e.exitCode === 0 && e.fingerprint === t.fingerprint);
+  const target = board.tasks.find(t => t.workspace === workspace && t.snapshot?.manifest === manifest && t.snapshot.revision === t.revision && t.fingerprint === fingerprint);
+  if (!target || target.archived || target.disposition || target.suspension || target.executionLease || target.column !== "review" || target.phase !== "orchestrator" || !assessed(target) || (target.prMode !== "none" && (!target.pr?.completed || !target.pr.synced))) return [];
+  const accepted: IntegratedProvenance[] = [];
+  for (const dep of board.tasks) {
+    if (dep.column !== "done" || dep.disposition || !assessed(dep) || !dep.workspace || !dep.snapshot || dep.snapshot.revision !== dep.revision) continue;
+    const publication = [...dep.history].reverse().find(e => e.event === "tested source integrated without changing caller Git index or branch")?.data as { paths?: string[]; fingerprint?: string } | undefined;
+    if (!publication || publication.fingerprint !== dep.fingerprint || !Array.isArray(publication.paths)) continue;
+    accepted.push({ taskId: dep.id, revision: dep.revision, workspace: dep.workspace, manifest: dep.snapshot.manifest, fingerprint: dep.fingerprint!, paths: publication.paths });
+  }
+  return accepted;
+}
 const git = (cwd: string, args: string[], input?: string) => execFileSync("git", args, { cwd, encoding: "utf8", input, maxBuffer: 16 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] });
 const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 function safePath(cwd: string, name: string) {
@@ -116,7 +139,20 @@ export function integrateSnapshot(project: string, workspace: string, manifestFi
   if (conflicts.length) throw new Error(`Integration conflict: opened project changed at ${conflicts.slice(0, 20).join(", ")}. Snapshot evidence retained; move backlog -> ready to resubmit and retest against the new source.`);
   const changed = differences(baseline, submitted);
   const dirty = changed.filter(name => baseline.protected.includes(name));
-  if (dirty.length) throw new Error(`Integration conflict: caller dirty/untracked files are protected: ${dirty.join(", ")}`);
+  const provenance: { path: string; provenance: IntegratedProvenance }[] = [];
+  if (dirty.length) {
+    const accepted = integratedProvenance(project, workspace, manifestFile, expectedFingerprint);
+    const staged = git(project, ["diff", "--cached", "--relative", "--name-only", "-z", "HEAD", "--", "."]).split("\0");
+    for (const name of dirty) {
+      const dep = accepted.find(dep => {
+        if (!dep.paths.includes(name) || staged.includes(name) || sourceFingerprint(dep.workspace) !== dep.fingerprint) return false;
+        const original = JSON.parse(readFileSync(dep.manifest, "utf8")) as Manifest, accepted = capture(dep.workspace);
+        return differences(original, accepted).includes(name) && same(accepted.files[name], baseline.files[name]);
+      });
+      if (!dep) throw new Error(`Integration conflict: caller dirty/untracked files are protected: ${name}; lacks current accepted integration provenance`);
+      provenance.push({ path: name, provenance: dep });
+    }
+  }
   // Also reject ignored/private collisions which are deliberately absent from source manifests.
   for (const name of changed) {
     const path = safePath(project, name);
@@ -132,7 +168,7 @@ export function integrateSnapshot(project: string, workspace: string, manifestFi
   const createdDirs: string[] = [];
   const cleanup = () => rmSync(recovery, { recursive: true, force: true });
   try {
-    writeFileSync(join(recovery, "recovery.json"), JSON.stringify({ project, workspace, manifestFile, expectedFingerprint, baseline, submitted, plan: plan.map(({ name, original, replacement, displaced }) => ({ name, original, replacement, displaced })), recovery: "Inspect retained files and current caller paths; never overwrite a caller destination. Retained inodes may still be open in editors. Manual cleanup only after editors release files." }), { mode: 0o600, flag: "wx" });
+    writeFileSync(join(recovery, "recovery.json"), JSON.stringify({ project, workspace, manifestFile, expectedFingerprint, baseline, submitted, provenance, plan: plan.map(({ name, original, replacement, displaced }) => ({ name, original, replacement, displaced })), recovery: "Inspect retained files and current caller paths; never overwrite a caller destination. Retained inodes may still be open in editors. Manual cleanup only after editors release files." }), { mode: 0o600, flag: "wx" });
     for (const item of plan) {
       if (!item.replacement) continue;
       const entry = submitted.files[item.name];

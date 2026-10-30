@@ -68,6 +68,7 @@ const PARENT_PROMPT = "PARENT_PROMPT_MARKER";
 describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)", () => {
   let prevAgentDir: string | undefined;
   let prevHome: string | undefined;
+  let prevSessionDir: string | undefined;
   let hermeticDir: string;
   let runtimeDir: string;
   let faux: ReturnType<typeof registerFauxProvider>;
@@ -80,6 +81,10 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
     prevHome = process.env.HOME;
     process.env.PI_CODING_AGENT_DIR = hermeticDir;
     process.env.HOME = hermeticDir;
+    prevSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+    // Pi's default encodes cwd as one filename; continued snapshots can exceed
+    // NAME_MAX. Keep real persisted sessions inside our short, hermetic root.
+    process.env.PI_CODING_AGENT_SESSION_DIR = join(hermeticDir, "sessions");
 
     faux = registerFauxProvider({ provider: "faux", models: [{ id: "faux-1", contextWindow: 200_000 }] });
 
@@ -97,6 +102,8 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
     else process.env.PI_CODING_AGENT_DIR = prevAgentDir;
     if (prevHome == null) delete process.env.HOME;
     else process.env.HOME = prevHome;
+    if (prevSessionDir == null) delete process.env.PI_CODING_AGENT_SESSION_DIR;
+    else process.env.PI_CODING_AGENT_SESSION_DIR = prevSessionDir;
     rmSync(hermeticDir, { recursive: true, force: true });
     if (runtimeDir) rmSync(runtimeDir, { recursive: true, force: true });
   });
@@ -126,6 +133,7 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
 
     let active: string[] = [];
     let prompt = "";
+    let sessionCreated = false;
     try {
       await runAgent(ctx, agentName, "go", {
         pi,
@@ -136,11 +144,13 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
         onSessionCreated: (s) => {
           // Both fixed at construction (before any prompt turn): the gated tool
           // set and the effective system prompt (built from prompt_mode + skills).
+          sessionCreated = true;
           active = s.getActiveToolNames();
           prompt = s.systemPrompt;
         },
       });
-    } catch {
+    } catch (error) {
+      if (!sessionCreated) throw error;
       // Prompt may error (no live provider) — both observables are captured at
       // onSessionCreated, before the turn.
     }

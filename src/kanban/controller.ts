@@ -7,6 +7,7 @@ import type { AgentRecord } from "../types.js";
 import type { KanbanBinding } from "./agent.js";
 import { AuditOutbox } from "./audit-outbox.js";
 import { type Command, checked, command, fingerprint, prBody } from "./execution.js";
+import { kanbanRenderers } from "./render.js";
 import { createSnapshot, integrateSnapshot } from "./snapshot.js";
 import { type Criterion, KanbanBoardBusyError, KanbanStore, type Lease, type NewTask, type Role, type Task, text } from "./store.js";
 
@@ -301,7 +302,7 @@ export class KanbanController {
         if (["Agent", "SubagentWorkflow", "Kanban", "get_subagent_result", "steer_subagent"].includes(toolName)) throw new Error("Kanban workers cannot delegate or change unrelated tasks");
       },
       tool: defineTool({
-        name: "KanbanTask", label: "Kanban task",
+        name: "KanbanTask", label: "Kanban task", ...kanbanRenderers,
         description: "Operate only on your assigned Kanban task. Test executes a real command and records its exit/output. Evaluate computes weighted rubric scores. Handoff advances only after role-specific gates pass. PR creates or reviews the task PR; it never bypasses branch protections.",
         parameters: Type.Object({ proposal: Type.Optional(Type.Object({ parentId: Type.String(), title: Type.String(), scope: Type.String(), reason: Type.String(), expectedResult: Type.String(), relationship: Type.Object({ targetId: Type.String(), type: Type.Union(['depends-on','completed-before','completed-after'].map(v=>Type.Literal(v))), blocking: Type.Boolean() }) })), action: Type.Union(["get", "comment", "status", "propose", "test", "evaluate", "handoff", "pr"].map(v => Type.Literal(v))), notes: Type.Optional(Type.String()), summary: Type.Optional(Type.String()), details: Type.Optional(Type.String()), state: Type.Optional(Type.Union(["working", "thinking", "waiting_dependency", "waiting_user", "stuck", "idle"].map(v => Type.Literal(v)))), dependencyId: Type.Optional(Type.String()), command: Type.Optional(Type.String()), scores: Type.Optional(Type.Array(Type.Number())) }),
         execute: async (_call, args) => {
@@ -427,7 +428,7 @@ export class KanbanController {
   }
   orchestratorTool() {
     return defineTool({
-      name: "Kanban", label: "Project Kanban",
+      name: "Kanban", label: "Project Kanban", ...kanbanRenderers,
       description: "Native harness task planning and live runs, available with or without the optional Kanban web view. Create fully specified tasks for immediate Ready release; default operator/tester/reviewer are three independent operate sessions. Complete scope, rubric and best practices without delay. Set holdInBacklog only on explicit user request and explain how to release it. Independent native operator/tester/reviewer sessions enforce recorded tests and three >=85% scores before completion. List includes harness runs; pause-agent takes a harness run id, pause-all pauses tasks and stops current native runs. Backlog pauses an individual task; archive is Done-only. Explicit cancel with notes closes obsolete work as Done/cancelled without acceptance, retaining evidence and checkpoints. Cancelled tasks cannot resume or dispatch comment replies. Merge authorization remains user-only.",
       promptGuidelines: [KANBAN_GUIDELINES],
       parameters: Type.Object({

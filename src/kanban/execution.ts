@@ -4,14 +4,19 @@ import { lstatSync, readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { join, relative } from "node:path";
 import type { Task } from "./store.js";
 
-export interface CommandResult { code: number; stdout: string; stderr: string }
-export type Command = (file: string, args: string[], cwd: string, signal?: AbortSignal) => Promise<CommandResult>;
-export const command: Command = (file, args, cwd, signal) => new Promise((resolve, reject) => {
+const sourceListingLimit = 16 * 1024 * 1024;
+export interface CommandResult { code: number; stdout: string; stderr: string; stdoutComplete?: boolean }
+export interface CommandOptions { completeStdout?: boolean }
+export type Command = (file: string, args: string[], cwd: string, signal?: AbortSignal, options?: CommandOptions) => Promise<CommandResult>;
+export const command: Command = (file, args, cwd, signal, options) => new Promise((resolve, reject) => {
   if (signal?.aborted) { reject(new Error("Task cancelled")); return; }
   const child = spawn(file, args, { cwd, stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
   let stdout = "", stderr = "", killed = false;
+  const chunks: Buffer[] = [];
+  let bytes = 0, captureError: Error | undefined;
   let hardStop: ReturnType<typeof setTimeout> | undefined;
   const stop = () => {
+    if (killed) return;
     killed = true;
     const kill = (s: NodeJS.Signals) => {
       try { if (process.platform !== "win32" && child.pid) process.kill(-child.pid, s); else child.kill(s); } catch { /* already exited */ }
@@ -22,10 +27,24 @@ export const command: Command = (file, args, cwd, signal) => new Promise((resolv
   const timer = setTimeout(stop, 10 * 60 * 1000); timer.unref();
   signal?.addEventListener("abort", stop, { once: true });
   const cleanup = () => { clearTimeout(timer); if (hardStop) clearTimeout(hardStop); signal?.removeEventListener("abort", stop); };
-  child.stdout.on("data", d => { stdout = (stdout + d).slice(-64000); });
+  child.stdout.on("data", (d: Buffer) => {
+    if (!options?.completeStdout) { stdout = (stdout + d).slice(-64000); return; }
+    if (killed) return;
+    bytes += d.length;
+    if (bytes > sourceListingLimit) {
+      captureError = new Error("Project file list exceeds 16 MiB snapshot limit");
+      chunks.length = 0;
+      stop();
+    } else chunks.push(d);
+  });
   child.stderr.on("data", d => { stderr = (stderr + d).slice(-64000); });
   child.on("error", e => { cleanup(); reject(e); });
-  child.on("close", code => { cleanup(); if (killed) reject(new Error("Task command cancelled or exceeded ten minutes")); else resolve({ code: code ?? -1, stdout, stderr }); });
+  child.on("close", code => {
+    cleanup();
+    if (captureError) reject(captureError);
+    else if (killed) reject(new Error("Task command cancelled or exceeded ten minutes"));
+    else resolve({ code: code ?? -1, stdout: options?.completeStdout ? Buffer.concat(chunks, bytes).toString("utf8") : stdout, stderr, ...(options?.completeStdout ? { stdoutComplete: true } : {}) });
+  });
 });
 export async function checked(run: Command, file: string, args: string[], cwd: string, signal?: AbortSignal) {
   const result = await run(file, args, cwd, signal);
@@ -69,11 +88,14 @@ function hashSource(cwd: string, names: string[]) {
   return hash.digest("hex");
 }
 export async function fingerprint(cwd: string, run: Command = command, signal?: AbortSignal): Promise<string> {
-  const listing = await run("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd, signal);
+  const listing = await run("git", ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], cwd, signal, { completeStdout: true });
+  if (signal?.aborted) throw new Error("Task cancelled");
   let names: string[];
   if (listing.code === 0) {
-    // A truncated filename list must never certify a partial snapshot.
-    if (listing.stdout.length >= 64000) throw new Error("Project file list exceeds snapshot limit; split the project before certifying work");
+    // Legacy/custom runners may still return diagnostic tails. Never treat one as complete.
+    if (listing.stdoutComplete === false || (listing.stdoutComplete !== true && listing.stdout.length >= 64000)) throw new Error("Project file list truncated; complete snapshot enumeration required");
+    if (Buffer.byteLength(listing.stdout, "utf8") > sourceListingLimit) throw new Error("Project file list exceeds 16 MiB snapshot limit");
+    if (listing.stdout && !listing.stdout.endsWith("\0")) throw new Error("Project file list truncated: missing NUL terminator");
     names = listing.stdout.split("\0").filter(Boolean);
   } else {
     names = [];

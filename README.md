@@ -1,5 +1,7 @@
 # pi-agents
 
+Kanban tool calls and results show concise task/status summaries by default, with actionable blocker or approval guidance. Full task payloads and evidence remain intact: expand tool output with Pi's `app.tools.expand` control (default **Ctrl+O**; `/hotkeys` shows your binding) for diagnostics. This applies to both `Kanban` and native worker `KanbanTask` tools.
+
 Check the loaded extension version with `/agents version` after updating and running `/reload`. The displayed version is captured when the extension module loads, not read afresh from disk on each command. If it remains stale, exit Pi and restart with `pi --continue`.
 
 A provider-neutral [Pi](https://pi.dev) extension for parallel agents and scripted workflow orchestration. Each agent runs in a separate Pi session with its own tools, prompt, model, and thinking level. All built-in agents inherit the parent session's model unless you explicitly choose another one.
