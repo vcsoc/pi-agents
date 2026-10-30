@@ -280,7 +280,7 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
         // Nested children are hidden from every reporting surface, so their spend
         // would otherwise be unattributable. Fold it into every ancestor's record:
         // the top-level one appears in lifecycle events, completion notifications,
-        // and `/agents`, and those all read `lifetimeUsage`. The whole chain is
+        // and `/crew`, and those all read `lifetimeUsage`. The whole chain is
         // walked, not just the immediate parent — a spawn callback only fires for
         // that child's OWN turns, so stopping at one level would hide a
         // great-grandchild from the only record anyone can see. (The live

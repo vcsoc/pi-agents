@@ -1,9 +1,9 @@
 /**
- * agent-file-toggle.ts — Pure helpers for the `/agents` file-editing operations:
+ * agent-file-toggle.ts — Pure helpers for the `/crew` file-editing operations:
  * locating an agent's .md file, toggling its `enabled:` frontmatter flag, and
  * serializing an AgentConfig back to frontmatter for eject.
  *
- * These live outside src/index.ts so they can be tested directly: the `/agents`
+ * These live outside src/index.ts so they can be tested directly: the `/crew`
  * command handler is an ~890-line closure reached only through `registerCommand`,
  * which every test mocks.
  *
@@ -40,7 +40,7 @@ export const personalAgentsDir = () => join(getAgentDir(), "agents");
 /**
  * Find the file path of a custom agent by name, in discovery-precedence order
  * (project, workspace, then global). Mirrors the load-side precedence in
- * src/custom-agents.ts — if the two drift, `/agents` edits a file the loader
+ * src/custom-agents.ts — if the two drift, `/crew` edits a file the loader
  * isn't reading.
  */
 export function findAgentFile(
@@ -63,7 +63,7 @@ export function findAgentFile(
  * An agent's type comes from its frontmatter `name:` now, so the two can
  * disagree: `reviewer.md` declaring `name: code-reviewer` is loaded as
  * `code-reviewer`, and probing for `code-reviewer.md` finds nothing. That is
- * not a harmless miss — `/agents → Disable` would then take the no-file branch
+ * not a harmless miss — `/crew → Disable` would then take the no-file branch
  * and write a NEW `code-reviewer.md` stub, which loses to `reviewer.md` on
  * load, leaving the agent enabled while reporting success.
  *
@@ -73,7 +73,7 @@ export function findAgentFile(
  * **A package agent has no editable file.** Its `sourcePath` points inside pi's
  * install root, where an edit is lost on the next `pi update` and a delete is
  * undone by the next `pi install`. Passing `source` lets that rule live here
- * rather than at each `/agents` call site: the package path is ignored, and the
+ * rather than at each `/crew` call site: the package path is ignored, and the
  * name probe runs instead — which finds the local stub shadowing it, if one
  * exists, and otherwise nothing. Callers then take their no-file branch, which
  * is the Eject-or-shadow behaviour a not-yet-ejected builtin already gets.
@@ -189,12 +189,12 @@ export function enableInContent(content: string): { content: string; changed: bo
   return { content: kept.join(""), changed: true };
 }
 
-/** Is this the empty stub `/agents` writes when disabling a built-in default? */
+/** Is this the empty stub `/crew` writes when disabling a built-in default? */
 export function isEmptyStub(content: string): boolean {
   return content.replace(/\r\n/g, "\n").trim() === "---\n---";
 }
 
-/** The answers `/agents → Create agent → Manual` collects, before serialization. */
+/** The answers `/crew → Create agent → Manual` collects, before serialization. */
 export interface NewAgentInput {
   description: string;
   /** Already-resolved `tools:` value ("none", "all", or a CSV of tool names). */

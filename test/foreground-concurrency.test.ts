@@ -290,7 +290,7 @@ describe("maxConcurrentForeground", () => {
     // The one behaviour change that is NOT gated on the setting. Before the
     // pool, an already-aborted signal was still wired with addEventListener —
     // which never fires — so the agent ran to completion beyond the reach of
-    // Esc or /agents. A queued spawn made that reachable often enough to fix;
+    // Esc or /crew. A queued spawn made that reachable often enough to fix;
     // this pins it for the UNQUEUED path too, with the pool off.
     it("stops an immediate spawn whose signal is already aborted, pool off", async () => {
       controllableRuns();
@@ -416,7 +416,7 @@ describe("maxConcurrentForeground", () => {
   });
 
   // The acquire/release pair must agree even though the limit between them is
-  // user-editable at runtime (`/agents → Settings`, and applySettings on load).
+  // user-editable at runtime (`/crew → Settings`, and applySettings on load).
   // Recomputing the pool at settle time made the release disagree with the
   // acquire in both directions.
   describe("a limit changed mid-run", () => {

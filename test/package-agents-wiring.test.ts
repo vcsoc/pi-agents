@@ -113,7 +113,7 @@ describe("package-provided agents, wired through the extension", () => {
   });
 
   it("traces the loaded agent back to the package that declared it", async () => {
-    // `/agents` names the package by mapping the loaded `sourcePath` onto a
+    // `/crew` names the package by mapping the loaded `sourcePath` onto a
     // package root. Nothing in the loader guarantees that relationship, so it is
     // asserted end to end rather than assumed: if the loader ever canonicalized
     // or rewrote the paths it walks, the badge would lose its name silently.

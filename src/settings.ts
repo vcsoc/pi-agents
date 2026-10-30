@@ -1,6 +1,6 @@
 // Persistence for pi-agents operational settings.
 // - Global:  ~/.pi/agent/subagents.json (via getAgentDir()) — manual defaults, never written here
-// - Project: <cwd>/.pi/subagents.json — written by /agents → Settings; overrides global on load
+// - Project: <cwd>/.pi/subagents.json — written by /crew → Settings; overrides global on load
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -35,7 +35,7 @@ export interface SubagentsSettings {
   /**
    * 0 = unlimited — the extension's single source of truth for that convention:
    * `normalizeMaxTurns()` in agent-runner.ts treats 0 → `undefined`, and the
-   * `/agents` → Settings input prompt explicitly says "0 = unlimited".
+   * `/crew` → Settings input prompt explicitly says "0 = unlimited".
    */
   defaultMaxTurns?: number;
   graceTurns?: number;
@@ -61,7 +61,7 @@ export interface SubagentsSettings {
    * Master switch for the schedule subagent feature. Defaults to `true`.
    * When `false`: the `Agent` tool's `schedule` param + its guideline are
    * stripped from the tool spec at registration (zero LLM-context cost), the
-   * scheduler doesn't bind to the session, and the `/agents → Scheduled jobs`
+   * scheduler doesn't bind to the session, and the `/crew → Scheduled jobs`
    * menu entry is hidden. Schema-level removal applies at extension load
    * (next pi session); runtime menu/runtime-fire short-circuit is immediate.
    */
@@ -126,7 +126,7 @@ export interface SubagentsSettings {
    * the list never registers and the global key handler never captures input.
    */
   fleetView?: boolean;
-  /** Opt-in project Kanban, automatic task workers, and /agents kban. Defaults to false. */
+  /** Opt-in project Kanban, automatic task workers, and /crew kban. Defaults to false. */
   kanbanEnabled?: boolean;
   /**
    * Whether `@handle message` typed at the prompt is routed to that subagent
@@ -205,7 +205,7 @@ export interface SubagentsSettings {
    * Master switch for scripted workflows. Defaults to `true`.
    *
    * Off is not a soft hide: the `SubagentWorkflow` tool is never registered, so
-   * the model is not told it exists and cannot call it, the `/agents`
+   * the model is not told it exists and cannot call it, the `/crew`
    * Workflows entry is hidden, and `--subagents-workflow-file` is refused.
    *
    * Absent is not the same as `true`. Unset means *auto*: on, but yielding to
@@ -217,7 +217,7 @@ export interface SubagentsSettings {
    * `resolveWorkflowCollisions` in index.ts.
    *
    * Read once at extension init, before registration, so flipping it in
-   * `/agents → Settings` takes effect on the next pi session — the same
+   * `/crew → Settings` takes effect on the next pi session — the same
    * contract `schedulingEnabled` has, and for the same reason: a tool spec is
    * fixed once pi has it.
    */
@@ -332,7 +332,7 @@ export interface SubagentsSettings {
    * How much of the conversation viewer's transcript renders as Markdown.
    * Defaults to `assistant`. Applied live — the viewer's `m` key cycles this
    * same setting, so a choice made in the overlay persists like one made in
-   * `/agents → Settings`.
+   * `/crew → Settings`.
    *
    * Scoped rather than all-or-nothing because the two kinds of content have
    * different contracts: assistant text is authored as Markdown, while a tool

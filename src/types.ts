@@ -87,7 +87,7 @@ export interface AgentConfig {
   /**
    * Where this agent was loaded from. `"package"` means an installed pi package
    * declared it (see package-resources.ts) — those files live under pi's install
-   * root, so `/agents` treats them as read-only and offers Eject instead of Edit.
+   * root, so `/crew` treats them as read-only and offers Eject instead of Edit.
    */
   source?: "default" | "project" | "global" | "package";
   /** Path of the .md it was loaded from. Unset for embedded defaults. */

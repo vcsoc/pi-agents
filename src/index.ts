@@ -7,7 +7,7 @@
  *   steer_subagent       — LLM-callable: send a steering message to a running agent
  *
  * Commands:
- *   /agents                 — Interactive agent management menu
+ *   /crew                   — Interactive agent management menu
  */
 
 import { spawn as spawnBrowser } from "node:child_process";
@@ -167,7 +167,7 @@ function createActivityTracker(maxTurns?: number, onStreamUpdate?: () => void) {
 /**
  * Advertised thinking levels, ordered to mirror pi-ai's EXTENDED_THINKING_LEVELS
  * (`off` + every `ThinkingLevel`). Single source for the Agent tool description,
- * the generated-agent template, and the `/agents` wizard so these lists can't
+ * the generated-agent template, and the `/crew` wizard so these lists can't
  * drift behind pi again (#147). Availability of any level still depends on the
  * host pi version and the selected model — pi clamps unsupported levels down.
  */
@@ -466,7 +466,7 @@ export default function (pi: ExtensionAPI) {
   function setViewerMarkdown(mode: ViewerMarkdownMode): void { viewerMarkdown = mode; }
   /**
    * The viewer's `m` key, from either entry point: set the mode and persist it,
-   * so the key and `/agents → Settings` stay one setting rather than one per
+   * so the key and `/crew → Settings` stay one setting rather than one per
    * entry point. `ctx` carries only the warning a failed write notifies with,
    * and the fleet list may be acting without one.
    */
@@ -1301,7 +1301,7 @@ export default function (pi: ExtensionAPI) {
 
   // Claude Code-style FleetView: navigable list of main + subagents below the editor.
   // The trailing arguments keep a conversation overlay opened here identical to
-  // one opened from `/agents`: same settings on the way in, same persist out.
+  // one opened from `/crew`: same settings on the way in, same persist out.
   const fleet = new FleetList(manager, agentActivity, isShowCostEnabled, getViewerMarkdown,
     (mode) => chooseViewerMarkdown(mode, currentCtx as unknown as ExtensionCommandContext | undefined),
     getFullscreenScrollbar, backgroundActionFor);
@@ -1340,7 +1340,7 @@ export default function (pi: ExtensionAPI) {
 
   // Master switch for the schedule subagent feature. Defaults to enabled.
   // Read once at extension init (before tool registration) so the Agent tool's
-  // param schema reflects the persisted setting. Runtime toggles via /agents
+  // param schema reflects the persisted setting. Runtime toggles via /crew
   // → Settings short-circuit the menu entry + the execute-time addJob path
   // immediately, but the schema-level removal only takes effect on next
   // extension load (next pi session). Documented in CHANGELOG/README.
@@ -1351,7 +1351,7 @@ export default function (pi: ExtensionAPI) {
   // Master switch for scripted workflows. Defaults to ON. Off means the
   // `SubagentWorkflow` tool is never registered: the model is not told the
   // feature exists (zero context cost) and has nothing to call. The
-  // `/agents → Workflows` view and `--subagents-workflow-file` are refused too, so
+  // `/crew → Workflows` view and `--subagents-workflow-file` are refused too, so
   // there is no second door into the same machinery.
   //
   // `workflowsPinned` records that the answer came from the user — a boolean in
@@ -1372,7 +1372,7 @@ export default function (pi: ExtensionAPI) {
   // When enabled, the three hardcoded default agents (operate, inspect,
   // design) are not registered. User-defined agents from project/global custom
   // agent dirs are completely unaffected — only DEFAULT_AGENTS are suppressed.
-  // Defaults to false; opt-in via `/agents → Settings` or subagents.json.
+  // Defaults to false; opt-in via `/crew → Settings` or subagents.json.
   // State lives in agent-types.ts (isDefaultsDisabled) because registerAgents
   // needs it; this wrapper just re-registers after flipping it.
   function setDisableDefaultAgents(b: boolean): void {
@@ -2178,7 +2178,7 @@ Terse command-style prompts produce shallow, generic work.
       // ---- Schedule: register a job, don't spawn now ----
       if (params.schedule) {
         if (!isSchedulingEnabled()) {
-          return textResult("Scheduling is disabled in this project. Enable via /agents → Settings → Scheduling.");
+          return textResult("Scheduling is disabled in this project. Enable via /crew → Settings → Scheduling.");
         }
         if (params.resume) {
           return textResult("Cannot combine `schedule` with `resume` — schedules create fresh agents.");
@@ -2211,7 +2211,7 @@ Terse command-style prompts produce shallow, generic work.
           return textResult(
             `${fallbackNote}Scheduled "${job.name}" (id: ${job.id}, type: ${job.scheduleType}). ` +
             `Next run: ${next ?? "(unknown)"}. ` +
-            `Manage via /agents → Scheduled jobs.`,
+            `Manage via /crew → Scheduled jobs.`,
           );
         } catch (err) {
           return textResult(err instanceof Error ? err.message : String(err));
@@ -2982,7 +2982,7 @@ Terse command-style prompts produce shallow, generic work.
     // than saying why nothing ran.
     if (!isWorkflowsEnabled()) {
       report(
-        `--${WORKFLOW_FILE_FLAG} ignored: workflows are off. Turn them on in /agents → Settings → Workflows, ` +
+        `--${WORKFLOW_FILE_FLAG} ignored: workflows are off. Turn them on in /crew → Settings → Workflows, ` +
           'or set `"workflowsEnabled": true` in .pi/subagents.json.',
         "warning",
       );
@@ -3182,7 +3182,7 @@ Terse command-style prompts produce shallow, generic work.
     },
   }));
 
-  // ---- /agents interactive menu ----
+  // ---- /crew interactive menu ----
 
   // Directory resolution and the frontmatter edits live in agent-file-toggle.ts
   // so they are reachable from tests — this command handler is only registered
@@ -4043,7 +4043,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
         {
           id: "kanbanEnabled",
           label: "Kanban",
-          description: "Optional live web view at /agents kban. Native tools and task execution remain available with the board on or off. Turning it off closes only the web interface.",
+          description: "Optional live web view at /crew kban. Native tools and task execution remain available with the board on or off. Turning it off closes only the web interface.",
           currentValue: kanbanEnabled ? "on" : "off",
           values: ["on", "off"],
         },
@@ -4243,7 +4243,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
         notifyApplied(ctx, `Viewer markdown set to ${value}`);
       } else if (id === "kanbanEnabled") {
         setKanbanEnabled(value === "on");
-        notifyApplied(ctx, `Kanban ${kanbanEnabled ? "enabled. Open /agents kban" : "interface disabled; harness work continues"}`);
+        notifyApplied(ctx, `Kanban ${kanbanEnabled ? "enabled. Open /crew kban" : "interface disabled; harness work continues"}`);
       } else if (id === "fleetView") {
         const enabled = value === "on";
         setFleetViewEnabled(enabled);
@@ -4387,11 +4387,11 @@ Write the file using the write tool. Only write the file, nothing else.`;
   }
 
   let demoRunning = false;
-  pi.registerCommand("agents", {
-    description: "Manage agents; /agents version shows the loaded version; /agents demo runs a bounded four-agent demonstration",
+  pi.registerCommand("crew", {
+    description: "Manage agents; /crew version shows the loaded version; /crew demo runs a bounded four-agent demonstration",
     handler: async (args, ctx) => {
       if (args.trim() === "version") {
-        ctx.ui.notify(`pi-agents v${EXTENSION_VERSION} (loaded)`, "info");
+        ctx.ui.notify(`pi-crew v${EXTENSION_VERSION} (loaded)`, "info");
         return;
       }
       if (args.trim() === "demo") {
@@ -4453,7 +4453,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
           const action = args.trim().slice(5).trim();
           if (action === "pause-all") await controller.pauseAll();
           else if (action.startsWith("pause ")) await controller.pauseAgent(action.slice(6).trim());
-          else if (action) throw new Error("Use /agents tasks, /agents tasks pause <run-id>, or /agents tasks pause-all");
+          else if (action) throw new Error("Use /crew tasks, /crew tasks pause <run-id>, or /crew tasks pause-all");
           const view = controller.view();
           ctx.ui.notify([
             "Harness tasks (Kanban web view is optional)",
@@ -4465,7 +4465,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
       }
       if (args.trim() !== "kban") { await showAgentsMenu(ctx); return; }
       try {
-        if (!kanbanEnabled) { ctx.ui.notify("Enable the optional Kanban interface in /agents > Settings first. Harness task tools remain available.", "info"); return; }
+        if (!kanbanEnabled) { ctx.ui.notify("Enable the optional Kanban interface in /crew > Settings first. Harness task tools remain available.", "info"); return; }
         const controller = ensureKanban(ctx);
         if (!kanbanWeb) {
           const generation = kanbanWebGeneration;
@@ -4485,7 +4485,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
   });
 
   /**
-   * What `/agents → Workflows` and the fleet list's `workflow` rows need from
+   * What `/crew → Workflows` and the fleet list's `workflow` rows need from
    * here. One object, built once: both entry points open the same inspector,
    * and handing them different views of the session would let the two drift.
    */

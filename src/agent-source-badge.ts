@@ -1,10 +1,10 @@
 /**
- * agent-source-badge.ts — How `/agents → Agent types` shows where an agent came
+ * agent-source-badge.ts — How `/crew → Agent types` shows where an agent came
  * from: the per-row badge, the legend that explains the badges actually on
  * screen, and the description line under the highlighted row.
  *
  * These live outside src/index.ts for the same reason as agent-file-toggle.ts:
- * the `/agents` handler is a large closure reached only through
+ * the `/crew` handler is a large closure reached only through
  * `registerCommand`, which every test mocks, so nothing inside it can be
  * asserted on directly.
  *

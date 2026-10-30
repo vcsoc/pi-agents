@@ -44,7 +44,7 @@ To iterate, edit the script file and call SubagentWorkflow again with scriptPath
 
 Three things in there matter.
 
-**`Task ID`** is what `resumeFromRunId` takes, and what `/agents → Workflows` lists the run under.
+**`Task ID`** is what `resumeFromRunId` takes, and what `/crew → Workflows` lists the run under.
 
 **`Script`** is the file to edit. **It is a scratch file in your system temp directory, not in your project** — it will not survive a reboot or a temp sweep. If the workflow turns out to be worth keeping, copy it somewhere durable; see [Save it](#5-save-it). The path means something slightly different depending on how the run was started: for an inline script it is a copy the tool just wrote, and for a run started from `scriptPath` or `name` it is *your own file*, reported straight back.
 
@@ -72,7 +72,7 @@ A **`workflow` row in FleetView**, above the agents, carrying its agent counts w
 
 Each row names the model the child *actually* ran on — read back from its session once pi has resolved its defaults, not the string the script asked for — so a fuzzy a short model name reads as the model it resolved to, and an `agent()` that named no model still says what it inherited.
 
-The **inspector**, at `/agents → Workflows` — two panes, two levels: phases on the left, that phase's agents on the right, and `⏎` to descend into one agent's prompt, activity and outcome. The detail pane has room for the canonical `provider/model-id` and the thinking level, including a level pi clamped (`thinking: low (asked max)`). The full key table is in [the README](../README.md#commands); the four that change the run rather than the view are:
+The **inspector**, at `/crew → Workflows` — two panes, two levels: phases on the left, that phase's agents on the right, and `⏎` to descend into one agent's prompt, activity and outcome. The detail pane has room for the canonical `provider/model-id` and the thinking level, including a level pi clamped (`thinking: low (asked max)`). The full key table is in [the README](../README.md#commands); the four that change the run rather than the view are:
 
 | Key | |
 |---|---|
@@ -91,7 +91,7 @@ The fifth key only shows you something:
 
 Because it changes nothing, `c` works at both levels and on an agent that has already settled — which is the usual case, since reading what a child did is most of why the inspector gets opened. The dialog hides itself while the conversation is up and comes back when you close it. A row with no child behind it yet (queued, or replayed from the resume journal) has no conversation to open and does not offer the key.
 
-A run's own agents are not listed separately in the fleet list, the widget, the `/agents` menus or `@handle` resolution — they belong to the run, which reports for them. `c` in the inspector is the one way in to a child's conversation.
+A run's own agents are not listed separately in the fleet list, the widget, the `/crew` menus or `@handle` resolution — they belong to the run, which reports for them. `c` in the inspector is the one way in to a child's conversation.
 
 ### 4. Edit and re-run
 
@@ -106,7 +106,7 @@ Every run journals each settled `agent()` call beside its script as `<run id>.wo
 Four things it will not do:
 
 - **Cross sessions.** The journal is keyed to the session that wrote it. Restart pi and the run id is dead — you get `No workflow run "<id>" in this session.`
-- **Resume a live run.** Stop it from `/agents → Workflows` first; while it is running you get `Workflow "<id>" is still running.`
+- **Resume a live run.** Stop it from `/crew → Workflows` first; while it is running you get `Workflow "<id>" is still running.`
 - **Replay a failure.** A journaled failure ends the prefix, so resuming a run that died at agent 5 retries exactly agent 5. That is the point.
 - **Replay a run that used `agent({ resume })` at all.** A replayed agent is text from a file rather than a live child, so there would be no conversation left for a later `resume` to continue.
 
@@ -128,7 +128,7 @@ The file must carry an `export const meta = { name, description }` declaration. 
 
 Then invoke it by name: *"run the auth-audit workflow"*. The model passes `name: "auth-audit"` and the run reports that file back as its `Script:`, so the edit-and-re-run loop still works on it.
 
-**Nothing lists your saved workflows for you.** `/agents → Workflows` is a *run* inspector scoped to the current session, not a workflow browser — with five workflows saved on disk it will show you nothing. You reach a saved workflow by naming it to the model, or with [`--subagents-workflow-file=`](../README.md#cli-flags). Keeping the names memorable is on you.
+**Nothing lists your saved workflows for you.** `/crew → Workflows` is a *run* inspector scoped to the current session, not a workflow browser — with five workflows saved on disk it will show you nothing. You reach a saved workflow by naming it to the model, or with [`--subagents-workflow-file=`](../README.md#cli-flags). Keeping the names memorable is on you.
 
 ### 6. Parameterize it
 
@@ -294,7 +294,7 @@ A pi package can ship workflow scripts too, by declaring them in its `package.js
 { "pi": { "subagents": { "workflows": ["./workflows"] } } }
 ```
 
-Package directories are searched **last**, so a script of yours always wins the name, and only packages pi has actually installed are read — see [Shipping agents in a pi package](../README.md#shipping-agents-in-a-pi-package) for the full manifest and how discovery works. A package script still has to carry the `export const meta = …` declaration to count as a workflow. Set `"packageWorkflows": false` in `subagents.json` (or `/agents → Settings → Package workflows`) to leave package scripts out; the setting is separate from `packageAgents` because a workflow is JavaScript this extension executes.
+Package directories are searched **last**, so a script of yours always wins the name, and only packages pi has actually installed are read — see [Shipping agents in a pi package](../README.md#shipping-agents-in-a-pi-package) for the full manifest and how discovery works. A package script still has to carry the `export const meta = …` declaration to count as a workflow. Set `"packageWorkflows": false` in `subagents.json` (or `/crew → Settings → Package workflows`) to leave package scripts out; the setting is separate from `packageAgents` because a workflow is JavaScript this extension executes.
 
 ### Limits and caps
 
@@ -308,7 +308,7 @@ Package directories are searched **last**, so a script of yours always wins the 
 
 These are three different things and are easy to conflate: 1000 is a budget for the whole run, the concurrency figure is how many run *simultaneously*, and 4096 is per call rather than per run. Excess items queue rather than melting the machine.
 
-Above 25 scheduled agents, or 1.5M tokens actual or projected, the card adds `⚠ Large workflow · /agents → Workflows to stop`.
+Above 25 scheduled agents, or 1.5M tokens actual or projected, the card adds `⚠ Large workflow · /crew → Workflows to stop`.
 
 A run's concurrency limit is its own, independent of the session's `maxConcurrent` and `maxConcurrentForeground` pools — its agents do not enter either.
 
@@ -382,7 +382,7 @@ The script called `Date.now()`, `new Date()` or `Math.random()`. A script that v
 A typo, or an option from a different tool. The supported set is `label`, `phase`, `model`, `agentType`, `isolation`, `gate`, `resume`, `effort`, `schema`.
 
 **An agent ran as the wrong type and nothing said so.**
-An `agentType` that names no known agent falls back to `operate` **silently** — unlike the `Agent` tool, which tells you. Option *keys* are validated; option *values* are not. Check the spelling against `/agents`; matching is case-insensitive, and a disabled agent does not count.
+An `agentType` that names no known agent falls back to `operate` **silently** — unlike the `Agent` tool, which tells you. Option *keys* are validated; option *values* are not. Check the spelling against `/crew`; matching is case-insensitive, and a disabled agent does not count.
 
 **`agent()` returned `null`.**
 The agent failed terminally, or you skipped it with `s` in the inspector. These are indistinguishable to the script. With `schema`, it also covers a child that never produced a payload matching the schema.

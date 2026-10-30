@@ -777,7 +777,7 @@ describe("agent-runner usage callback wiring", () => {
   });
 });
 
-// getAgentConversation renders the subagent transcript shown in the /agents
+// getAgentConversation renders the subagent transcript shown in the /crew
 // inspect overlay. Pure function over session.messages — no mocks needed
 // beyond a literal-object session.
 describe("getAgentConversation", () => {

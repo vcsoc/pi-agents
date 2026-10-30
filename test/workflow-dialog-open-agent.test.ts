@@ -103,8 +103,8 @@ describe("the inspector opens a workflow agent's conversation", () => {
   async function bootWithChild() {
     const booted = makePi();
     subagentsExtension(booted.pi);
-    const command = booted.commands.get("agents");
-    if (!command) throw new Error("the extension did not register /agents");
+    const command = booted.commands.get("crew");
+    if (!command) throw new Error("the extension did not register /crew");
     await booted.tools.get("SubagentWorkflow").execute(
       "tc-0",
       {

@@ -385,7 +385,7 @@ describe("FleetList vs other focused components (#123)", () => {
   // the prompt editor out of the editor container while getEditorText() still
   // reads the detached (empty) editor. So while another component owns the
   // keyboard — another extension's selector (rpiv-ask-user-question), pi's own
-  // menus, our /agents settings — the list must not consume its keys.
+  // menus, our /crew settings — the list must not consume its keys.
 
   /** A minimal real Editor — what pi focuses at the prompt (CustomEditor extends it). */
   function realEditor(): Editor {
@@ -631,7 +631,7 @@ describe("FleetList overlay lifecycle", () => {
 
     // "all" → "off" proves the cycle started from the *setting*; the viewer's own
     // fallback would have started at "assistant" and landed on "all". A recorded
-    // value at all proves the persist hook is wired, as it is from /agents.
+    // value at all proves the persist hook is wired, as it is from /crew.
     expect(persisted).toEqual(["off"]);
   });
 

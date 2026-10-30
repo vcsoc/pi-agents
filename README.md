@@ -1,8 +1,8 @@
-# pi-agents
+# pi-crew
 
 Kanban tool calls and results show concise task/status summaries by default, with actionable blocker or approval guidance. Full task payloads and evidence remain intact: expand tool output with Pi's `app.tools.expand` control (default **Ctrl+O**; `/hotkeys` shows your binding) for diagnostics. This applies to both `Kanban` and native worker `KanbanTask` tools.
 
-Check the loaded extension version with `/agents version` after updating and running `/reload`. The displayed version is captured when the extension module loads, not read afresh from disk on each command. If it remains stale, exit Pi and restart with `pi --continue`.
+Check the loaded extension version with `/crew version` after updating and running `/reload`. The displayed version is captured when the extension module loads, not read afresh from disk on each command. If it remains stale, exit Pi and restart with `pi --continue`.
 
 A provider-neutral [Pi](https://pi.dev) extension for parallel agents and scripted workflow orchestration. Each agent runs in a separate Pi session with its own tools, prompt, model, and thinking level. All built-in agents inherit the parent session's model unless you explicitly choose another one.
 
@@ -56,10 +56,10 @@ Agents run with your account's permissions. Read-only prompts, tool restrictions
 ## Install
 
 ```bash
-pi install https://github.com/vcsoc/pi-agents.git
+pi install https://github.com/vcsoc/pi-crew.git
 ```
 
-Restart Pi or run `/reload` after installation. Open `/agents` to manage agents and settings. Requires Pi 1.1.0 or newer; development checks use Pi 1.4.0.
+Restart Pi or run `/reload` after installation. Open `/crew` to manage agents and settings. Requires Pi 1.1.0 or newer; development checks use Pi 1.4.0.
 
 Do not also load a local checkout or another copy of this extension: duplicate copies register the same tool names.
 
@@ -89,10 +89,10 @@ Agents run in the background by default: the call returns an ID immediately and 
 
 Press `ctrl+b` while a foreground `Agent` call is running to hand it to the background. The same run keeps going — same session, in-flight turn, transcript and worktree — and the blocked call returns the agent ID with the same result a `run_in_background: true` spawn gets. Completion then arrives as the normal background notification, naming the original tool call. After 2 seconds the running call's row shows `(ctrl+b to run in background)`.
 
-- `ctrl+b` hands off every running foreground `Agent` call at once. To hand off just one, press `b` in its conversation viewer (FleetView or `/agents → Running agents`).
+- `ctrl+b` hands off every running foreground `Agent` call at once. To hand off just one, press `b` in its conversation viewer (FleetView or `/crew → Running agents`).
 - The key is claimed only while such a call is running and the prompt editor has focus; the rest of the time — and in dialogs or the viewer's steering composer — `ctrl+b` is still pi's cursor-left. With FleetView disabled the extension cannot see which component has focus, so it claims the key whenever a call is running.
 - One hint shows per batch of parallel calls, on the earliest one still running.
-- Esc in the parent no longer reaches a handed-off agent. Stop it from `/agents → Running agents` with `x`.
+- Esc in the parent no longer reaches a handed-off agent. Stop it from `/crew → Running agents` with `x`.
 - It is one-way: there is no way back to foreground.
 - Other tool calls in the same assistant message still hold the model's next turn until they finish; pi runs a message's tool calls as one batch.
 - Not offered for a foreground call still queued for a slot, a foreground `resume`, a workflow's agents or nested children. There is no automatic timeout.
@@ -119,9 +119,9 @@ Schedule formats:
 
 When a schedule fires, the spawn runs in background and its completion notification arrives the same way as a manually-spawned background agent's — your parent agent reasons about the result the same way.
 
-Schedules are **session-scoped**: they reset on `/new` and restore on `/resume`. List and cancel via `/agents → Scheduled jobs` (creation is the `Agent` tool's job — there is no parallel manual-create wizard). Storage at `<cwd>/.pi/subagent-schedules/<sessionId>.json` with PID-based file locking for cross-instance safety.
+Schedules are **session-scoped**: they reset on `/new` and restore on `/resume`. List and cancel via `/crew → Scheduled jobs` (creation is the `Agent` tool's job — there is no parallel manual-create wizard). Storage at `<cwd>/.pi/subagent-schedules/<sessionId>.json` with PID-based file locking for cross-instance safety.
 
-**Disable the feature entirely**: `/agents → Settings → Scheduling → disabled` removes `schedule` from the `Agent` tool spec (no LLM-context cost), hides the menu entry, and stops any active scheduler. The schema-level removal takes effect on the next pi session; the runtime kill is immediate. Re-enable from the same menu.
+**Disable the feature entirely**: `/crew → Settings → Scheduling → disabled` removes `schedule` from the `Agent` tool spec (no LLM-context cost), hides the menu entry, and stops any active scheduler. The schema-level removal takes effect on the next pi session; the runtime kill is immediate. Re-enable from the same menu.
 
 Restrictions:
 - `schedule` cannot be combined with `inherit_context` (no parent conversation exists at fire time) or `resume` (schedules create fresh agents).
@@ -131,7 +131,7 @@ Restrictions:
 
 ## UI
 
-The extension renders a persistent widget above the editor showing active agents. By default it shows background runs only (`widgetMode: background`) — foreground agents already render inline as the `Agent` tool result, so the widget would otherwise double-render them. Switch to `all` (every agent) or `off` (hide the widget) via `/agents → Settings → Widget`:
+The extension renders a persistent widget above the editor showing active agents. By default it shows background runs only (`widgetMode: background`) — foreground agents already render inline as the `Agent` tool result, so the widget would otherwise double-render them. Switch to `all` (every agent) or `off` (hide the widget) via `/crew → Settings → Widget`:
 
 ```
 ● Agents
@@ -162,11 +162,11 @@ While subagents are running, a navigable list renders **below** the editor:
                                                                                    ↓ 3 more
 ```
 
-Running [workflows](#subagentworkflow) appear as a single `workflow` row above the agents, carrying their agent counts in place of a description. `Enter` on one opens the same two-pane inspector `/agents → Workflows` does, rather than a conversation overlay. A run's own agents are *not* listed separately — they belong to the run, which reports for them, so they are filtered out of the fleet list, the above-editor widget, the `/agents` menus and `@handle` resolution exactly as nested children are. They are also outside the `maxConcurrent` pool: the run has its own concurrency cap, and routing a fan-out through the session pool as well would let one workflow starve everything else. The agents are ordered earliest-launched first, and only agents you can actually open are shown (pending/queued agents with no session yet appear once they start). At an **empty prompt**, press `↓` (or `←`) to move focus from the prompt into the list — the selected row is marked `●`, the rest `○`. The selected row renders in the theme's primary text color rather than the muted/dim treatment of the others; an agent with a configured `color` shows its badge there too, bolded. `↑`/`↓` move the selection, `Enter` opens the selected agent's live conversation overlay (it auto-updates as the agent works), and `Esc` (or `↑` above `main`) returns to the prompt. Selecting `main` returns to the normal view. Inside the overlay, press `Enter` to steer the running agent — type a message and `Enter` to send it (`Esc` or an empty submit returns), and it redirects the agent the same way the `steer_subagent` tool does. On a running foreground `Agent` call, press `b` to hand that run to the background; the hint only shows where the handoff is available. A viewer stays open when its agent finishes so you can read the final output, and finished agents linger in the list for a few seconds before dropping out. Typing anything at a non-empty prompt behaves normally — the list only captures arrow keys when the prompt is empty. Disable it entirely via `/agents → Settings → Fleet view`.
+Running [workflows](#subagentworkflow) appear as a single `workflow` row above the agents, carrying their agent counts in place of a description. `Enter` on one opens the same two-pane inspector `/crew → Workflows` does, rather than a conversation overlay. A run's own agents are *not* listed separately — they belong to the run, which reports for them, so they are filtered out of the fleet list, the above-editor widget, the `/crew` menus and `@handle` resolution exactly as nested children are. They are also outside the `maxConcurrent` pool: the run has its own concurrency cap, and routing a fan-out through the session pool as well would let one workflow starve everything else. The agents are ordered earliest-launched first, and only agents you can actually open are shown (pending/queued agents with no session yet appear once they start). At an **empty prompt**, press `↓` (or `←`) to move focus from the prompt into the list — the selected row is marked `●`, the rest `○`. The selected row renders in the theme's primary text color rather than the muted/dim treatment of the others; an agent with a configured `color` shows its badge there too, bolded. `↑`/`↓` move the selection, `Enter` opens the selected agent's live conversation overlay (it auto-updates as the agent works), and `Esc` (or `↑` above `main`) returns to the prompt. Selecting `main` returns to the normal view. Inside the overlay, press `Enter` to steer the running agent — type a message and `Enter` to send it (`Esc` or an empty submit returns), and it redirects the agent the same way the `steer_subagent` tool does. On a running foreground `Agent` call, press `b` to hand that run to the background; the hint only shows where the handoff is available. A viewer stays open when its agent finishes so you can read the final output, and finished agents linger in the list for a few seconds before dropping out. Typing anything at a non-empty prompt behaves normally — the list only captures arrow keys when the prompt is empty. Disable it entirely via `/crew → Settings → Fleet view`.
 
 ### Fullscreen conversation observer
 
-In fullscreen mode (pi's default), opening an agent from FleetView, `/agents`, or the workflow inspector fills the terminal. Regular mode keeps the centered floating viewer and keyboard controls. Neither mode replaces the main session or pauses either agent. Escape returns to the previous view; while composing, the first Escape cancels the draft.
+In fullscreen mode (pi's default), opening an agent from FleetView, `/crew`, or the workflow inspector fills the terminal. Regular mode keeps the centered floating viewer and keyboard controls. Neither mode replaces the main session or pauses either agent. Escape returns to the previous view; while composing, the first Escape cancels the draft.
 
 In pi's `/settings → TUI mode → fullscreen`, the observer supports:
 
@@ -249,7 +249,7 @@ Only a mention at the start of a message is routed to an agent:
 | `@src/index.ts summarize this` | the main model, with pi's normal file attachment |
 | `@nosuchagent hello` | the main model, verbatim — no agent, no type, no interception |
 
-While an agent is live its handle addresses *it*, so `@inspect` never starts a second inspect alongside a running one — use the `Agent` tool for deliberate parallelism. `@<agent-id>` works too. `main` is reserved and can never be an agent's handle (a type slugging to it gets `main-2`); handles are capped at 64 characters. A handle written as typed always wins over the `@agent-` form, so an agent genuinely called `agent-inspect` stays reachable. [Nested subagents](#nested-subagents) are not addressable — they are hidden from every top-level surface and only their owner may steer them, so a handle that would name one starts a fresh top-level agent instead of reaching through that boundary. Suggestions list live agents first, then resumable ones, then startable types — and then pi's own file rows, in the same popup: `@` stays the file picker it always was, and the handles are added to it rather than replacing it. Disable the whole thing via `/agents → Settings → Agent mentions`.
+While an agent is live its handle addresses *it*, so `@inspect` never starts a second inspect alongside a running one — use the `Agent` tool for deliberate parallelism. `@<agent-id>` works too. `main` is reserved and can never be an agent's handle (a type slugging to it gets `main-2`); handles are capped at 64 characters. A handle written as typed always wins over the `@agent-` form, so an agent genuinely called `agent-inspect` stays reachable. [Nested subagents](#nested-subagents) are not addressable — they are hidden from every top-level surface and only their owner may steer them, so a handle that would name one starts a fresh top-level agent instead of reaching through that boundary. Suggestions list live agents first, then resumable ones, then startable types — and then pi's own file rows, in the same popup: `@` stays the file picker it always was, and the handles are added to it rather than replacing it. Disable the whole thing via `/crew → Settings → Agent mentions`.
 
 A `direct`-mode start takes the non-tool spawn path shared with the scheduler and cross-extension RPC, so — like those — it writes no `.output` transcript. That is the trade for skipping the model call: a `model`-mode start goes through the real `Agent` tool and keeps everything. Live tool activity and the turn counter are *not* part of that trade — a direct start renders them like any other agent. A mention-*resumed* agent goes through the full resume wiring and keeps both in either mode.
 
@@ -289,27 +289,27 @@ The `operate` agent is a **parent twin** — it receives the parent's entire sys
 
 Use `operate`, `inspect`, and `design` in `subagent_type`, workflow `agentType`, and mentions (`@operate`, `@inspect`, `@design`). Existing custom definitions, saved schedules, and fallback settings are not migrated automatically; update any that target renamed built-ins.
 
-Default agents can be **ejected** (`/agents` → select agent → Eject) to export them as `.md` files for customization, **overridden** by creating a `.md` file with the same name (e.g. `.pi/agents/operate.md`), or **disabled** per-project with `enabled: false` frontmatter.
+Default agents can be **ejected** (`/crew` → select agent → Eject) to export them as `.md` files for customization, **overridden** by creating a `.md` file with the same name (e.g. `.pi/agents/operate.md`), or **disabled** per-project with `enabled: false` frontmatter.
 
 ## Project Kanban (Opt-In)
 
 ### Quick Demo
 
-Run `/agents demo` for a bounded native demonstration: two parallel workers answer tiny dummy questions, a third agent independently tests and scores their outputs, and a fourth reviews the results. Workers have a 15-second target and the full run has a 30-second deadline. Slow providers or occupied agent slots can produce a truthful timeout instead of a successful demonstration. The command cancels unfinished demo work on failure or deadline; it never changes project files or marks managed tasks Done.
+Run `/crew demo` for a bounded native demonstration: two parallel workers answer tiny dummy questions, a third agent independently tests and scores their outputs, and a fourth reviews the results. Workers have a 15-second target and the full run has a 30-second deadline. Slow providers or occupied agent slots can produce a truthful timeout instead of a successful demonstration. The command cancels unfinished demo work on failure or deadline; it never changes project files or marks managed tasks Done.
 
 When the optional Kanban interface is enabled, the command opens a separate, read-only **agents demo** virtual board, identified by SHA-256 of the literal `agents demo`. Four dummy task cards update live with running/completed states, agent outputs, and the final result. This board is in memory, resets for each demo, and never reads or writes the current project's board or dispatches managed tasks. With the interface off, the same demonstration runs natively and reports its result in Pi. Demo cards and scores are illustrative, not managed-task certification. Only one demo runs at a time.
 
-**The native Pi harness always owns execution.** Kanban is an optional live interface over the same harness task service, not a replacement mode. Agent, workflows, ordinary tools, results and steering remain available with it on or off. Toggling it never stops agents or discards their sessions. The native `Kanban` task tool and `/agents tasks` work without the web interface in trusted projects.
+**The native Pi harness always owns execution.** Kanban is an optional live interface over the same harness task service, not a replacement mode. Agent, workflows, ordinary tools, results and steering remain available with it on or off. Toggling it never stops agents or discards their sessions. The native `Kanban` task tool and `/crew tasks` work without the web interface in trusted projects.
 
-Enable **Kanban** in `/agents` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`), then run:
+Enable **Kanban** in `/crew` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`), then run:
 
 ```text
-/agents kban
+/crew kban
 ```
 
 The browser board shows **backlog**, **ready**, **in progress**, **review**, and **done**, with live updates. The orchestrator immediately completes each task's scope, assignment, best practices and weighted rubric. Fully specified `Kanban create` calls release directly to Ready and start native dispatch. Unless you request agents, three independent `operate` sessions handle operator, tester and reviewer roles. Use `holdInBacklog: true` only for an explicit user-requested hold, and report the task ID, reason and release action. Required launch approvals remain binding. Separate tester and reviewer sessions evaluate the submitted work; the orchestrator independently scores it before completion. Every role must score at least **85%**, and real passing test-command evidence is required. A lower score returns actionable fix comments to the operator.
 
-Use **Add task** to submit a scoped item for immediate orchestrator preparation and Ready release in the same turn; new tasks must not be left in Backlog unless you explicitly request a hold. Workers still cannot delegate, and paused or terminal tasks never auto-resume. **Live Harness Runs** also shows ordinary native agents/workflows in the current Pi session. **Pause run** and **Pause all work** explicitly cancel current runs; pause-all also holds pending tasks and stops local scheduling. Native equivalents are `/agents tasks pause <run-id>` and `/agents tasks pause-all`. Resume work deliberately; turning the interface back on does not resume paused items.
+Use **Add task** to submit a scoped item for immediate orchestrator preparation and Ready release in the same turn; new tasks must not be left in Backlog unless you explicitly request a hold. Workers still cannot delegate, and paused or terminal tasks never auto-resume. **Live Harness Runs** also shows ordinary native agents/workflows in the current Pi session. **Pause run** and **Pause all work** explicitly cancel current runs; pause-all also holds pending tasks and stops local scheduling. Native equivalents are `/crew tasks pause <run-id>` and `/crew tasks pause-all`. Resume work deliberately; turning the interface back on does not resume paused items.
 
 Click a task for its scope, rubric, scores, test output, comments, PR, and history. Comments steer active workers; completed tasks can receive read-only responses. Drag a task to backlog to stop and edit it, then release it to ready to resume. Only you can release a task you paused. Right-click a Done card to archive it, or archive the completed scope when every active task is done. Unfinished work must be paused or explicitly cancelled, not archived. Use `Kanban` with `action: "cancel"`, task `id`, and a reason in `notes` to close obsolete scope as **Done / cancelled without acceptance**. This retains tests, evaluations, history and private checkpoints, revokes work safely, and never fabricates successful acceptance or integrates source. Cancelled tasks cannot resume or dispatch replies; create a new task for new work. Archiving does not undo edits or delete history.
 
@@ -327,14 +327,14 @@ Agents are discovered from four locations (higher priority wins):
 
 | Priority | Location | Scope |
 |----------|----------|-------|
-| 1 (highest) | `.pi/agents/<name>.md` | Project — pi's config dir; authoritative, and where `/agents` writes |
+| 1 (highest) | `.pi/agents/<name>.md` | Project — pi's config dir; authoritative, and where `/crew` writes |
 | 2 | `.agents/agents/<name>.md` | Project — the shared cross-tool `.agents` workspace (same convention as `.agents/skills/`) |
 | 3 | `$PI_CODING_AGENT_DIR/agents/<name>.md` (default `~/.pi/agent/agents/<name>.md`) | Global — available everywhere |
 | 4 (lowest) | Paths declared by an installed pi package | Package — see [Shipping agents in a pi package](#shipping-agents-in-a-pi-package) |
 
 Project-level agents override global ones with the same name, so you can customize a global agent for a specific project. If both project locations define the same name, **`.pi/agents/` wins** — `.pi` stays the project authority; `.agents/agents/` is an additional read location for projects that keep their agent assets in the `.agents` workspace. The global location follows the upstream `PI_CODING_AGENT_DIR` env var — set it to relocate all pi-coding-agent state (agents, skills, settings) to a custom directory. An agent's name is its frontmatter `name:`, falling back to the filename, so two files can now claim the same one — the later load wins, and the warning below names the file that took over.
 
-An unreadable or unparseable agent file is skipped, not fatal — a warning names the file and the error. If it was overriding a same-named agent, a second line names the file that loads instead. Set `strictAgentFiles: true` in `subagents.json` (or `/agents → Settings → Strict agent files`) to fail startup on a broken file instead; mid-session reloads still only warn.
+An unreadable or unparseable agent file is skipped, not fatal — a warning names the file and the error. If it was overriding a same-named agent, a second line names the file that loads instead. Set `strictAgentFiles: true` in `subagents.json` (or `/crew → Settings → Strict agent files`) to fail startup on a broken file instead; mid-session reloads still only warn.
 
 ### Example: `.pi/agents/auditor.md`
 
@@ -391,7 +391,7 @@ All fields are optional — sensible defaults for everything.
 | `inherit_context` | `false` | Copy the main conversation into this agent. Otherwise it starts with its task and instructions only. |
 | `run_in_background` | — | `true`: continue working without blocking the main chat. `false`: wait for its answer. Omit to follow `backgroundByDefault`. |
 | `isolated` | `false` | Use built-in tools only, without extensions, MCP, or skills. Different from a worktree; it is not an operating-system sandbox. |
-| `enabled` | `true` | Set `false` to hide this type from use. You can re-enable it from `/agents`. |
+| `enabled` | `true` | Set `false` to hide this type from use. You can re-enable it from `/crew`. |
 
 Frontmatter is authoritative. If an agent file sets `model`, `thinking`, `max_turns`, `inherit_context`, `run_in_background`, `isolated`, or `isolation`, those values are locked for that agent. `Agent` tool parameters only fill fields the agent config leaves unspecified. Other spawn paths differ per field:
 
@@ -399,7 +399,7 @@ Frontmatter is authoritative. If an agent file sets `model`, `thinking`, `max_tu
 - `isolation` holds on every path except workflows: only the script's `agent()` option decides there.
 - `inherit_context` applies only to `Agent` tool and nested spawns, including default-mode `@handle` mentions, which spawn through the `Agent` tool. Other start paths begin fresh unless the caller asks for context: workflow children and scheduled runs never inherit, and an RPC caller opts in with `inheritContext`.
 
-**Model name matching.** Prefer a full `provider/modelId` when you need a specific provider. Short names and minor version-format differences also work. If the named provider does not offer the model, the resolver can try the same model elsewhere. An unavailable agent-file model falls back to the parent model; `/agents` marks it as unavailable. [Model scope](#model-scope) is a separate check and uses exact IDs.
+**Model name matching.** Prefer a full `provider/modelId` when you need a specific provider. Short names and minor version-format differences also work. If the named provider does not offer the model, the resolver can try the same model elsewhere. An unavailable agent-file model falls back to the parent model; `/crew` marks it as unavailable. [Model scope](#model-scope) is a separate check and uses exact IDs.
 
 ### Nested subagents
 
@@ -415,13 +415,13 @@ allowed_subagents: support-file-finder, support-callsite-tracer   # or `all`
 
 **The allowlist is a privilege boundary, not just a routing hint.** A child runs with *its own* `tools:`, `extensions:`, and `isolated:` — the parent's restrictions are not inherited — so delegation grants the parent the union of what the listed agents can do. The read-only agent above can write and run commands through any listed agent that can, and `all` reaches every enabled agent including `operate`. Choose the list as carefully as you would choose `tools:` itself; that is the main reason this is default-off.
 
-`allowed_subagents` is runtime-enforced. A comma-separated list restricts nesting to those types; `all` (or `"*"` / `true`, matching how `extensions:` and `skills:` take booleans) allows any enabled agent; omitted, empty, `none`, or `false` means no nested tools are injected at all. Unknown, disabled, and out-of-list types are rejected rather than falling back — regardless of the project's [fallback agent](#persistent-settings) setting, so a configured fallback can never hand a nested caller an agent outside its allowlist — and a nested `model:` is validated against [Model Scope](#model-scope) exactly like a top-level spawn. Result, resume, and steering operations are ownership-scoped, so a parent can control only its own children. Nested records remain internal to that parent and do not appear in top-level tools, lifecycle events, or agent UI — so when a parent finishes, is stopped, or ends a resumed turn, its nested children are stopped with it. They do write their own `.output` transcript (subject to the same `output_transcript` gate), filed under the root session's directory alongside their ancestors', so a nested run can still be inspected after the fact. Their token usage is folded into every ancestor's totals up to the top-level agent (lifecycle events, completion notifications, `/agents`), so nested spend stays attributable at any depth even though the children themselves stay hidden. A nested result that ends `stopped`, `aborted`, or `steered` is labelled as partial, the same guarantee top-level results carry.
+`allowed_subagents` is runtime-enforced. A comma-separated list restricts nesting to those types; `all` (or `"*"` / `true`, matching how `extensions:` and `skills:` take booleans) allows any enabled agent; omitted, empty, `none`, or `false` means no nested tools are injected at all. Unknown, disabled, and out-of-list types are rejected rather than falling back — regardless of the project's [fallback agent](#persistent-settings) setting, so a configured fallback can never hand a nested caller an agent outside its allowlist — and a nested `model:` is validated against [Model Scope](#model-scope) exactly like a top-level spawn. Result, resume, and steering operations are ownership-scoped, so a parent can control only its own children. Nested records remain internal to that parent and do not appear in top-level tools, lifecycle events, or agent UI — so when a parent finishes, is stopped, or ends a resumed turn, its nested children are stopped with it. They do write their own `.output` transcript (subject to the same `output_transcript` gate), filed under the root session's directory alongside their ancestors', so a nested run can still be inspected after the fact. Their token usage is folded into every ancestor's totals up to the top-level agent (lifecycle events, completion notifications, `/crew`), so nested spend stays attributable at any depth even though the children themselves stay hidden. A nested result that ends `stopped`, `aborted`, or `steered` is labelled as partial, the same guarantee top-level results carry.
 
-The hard cap is depth 2 by default: main session (0) → subagent (1) → nested child (2). Change it project-wide with `maxSubagentDepth` in `subagents.json` (or `/agents → Settings → Nested depth`); `0` or `1` turns nesting off everywhere. An agent already at the cap gets no nested tools at all — not even `get_subagent_result`, since it can never own a child. A child must independently set `allowed_subagents` to delegate again; isolated agents never receive nested tools.
+The hard cap is depth 2 by default: main session (0) → subagent (1) → nested child (2). Change it project-wide with `maxSubagentDepth` in `subagents.json` (or `/crew → Settings → Nested depth`); `0` or `1` turns nesting off everywhere. An agent already at the cap gets no nested tools at all — not even `get_subagent_result`, since it can never own a child. A child must independently set `allowed_subagents` to delegate again; isolated agents never receive nested tools.
 
 Nested children occupy no concurrency slot, in either pool — their parent already holds one, and queueing them behind it would deadlock a parent waiting on its own child. The depth cap bounds how *deep* nesting goes, not how *wide*: a parent's only limit on concurrent children is that each spawn costs it a turn. Pair `allowed_subagents` with a `max_turns` on that agent if you want a hard ceiling on its fan-out.
 
-Because a subagent session never activates this extension (that is what keeps a child from building a second agent manager, and it is why nested tools are injected directly instead), a subagent also gets none of the extension's other surfaces: no `/agents` command, no cross-extension RPC handlers, no `subagents:ready` event.
+Because a subagent session never activates this extension (that is what keeps a child from building a second agent manager, and it is why nested tools are injected directly instead), a subagent also gets none of the extension's other surfaces: no `/crew` command, no cross-extension RPC handlers, no `subagents:ready` event.
 
 ### Tool & extension scoping
 
@@ -504,7 +504,7 @@ Four rules define the feature:
 - **Declaration is required.** Pi falls back to convention directories (`skills/`, `prompts/`, …) for a package with no `pi` key at all; this extension never does. A package carrying an `agents/` folder for some other tool contributes nothing until it names it — the author's half of the agreement, where installing is yours.
 - **Only pi's own packages count.** Discovery reads `packages[]` from pi's `settings.json`, global and project, through pi's package manager. `node_modules` is never scanned, and a package listed only by an untrusted project stays invisible until you trust it.
 - **Package agents rank last.** Any `.pi/agents/`, `.agents/agents/` or global file of the same name wins, so a package can offer a `reviewer` but never take the name away from you. Your project and personal definitions always take priority over packages.
-- **They are read-only in `/agents`,** badged `▪`, offering *Eject* (an editable copy that shadows the original) and *Disable* (an `enabled: false` stub that does the same).
+- **They are read-only in `/crew`,** badged `▪`, offering *Eject* (an editable copy that shadows the original) and *Disable* (an `enabled: false` stub that does the same).
 
 `packageAgents` and `packageWorkflows` in [`subagents.json`](#persistent-settings) default to `true`; set either to `false` or to a list of package names to narrow it. Installing a package is already the trust decision — pi runs that package's `extensions/` and puts its `skills/` in the system prompt with no further prompt, so a declared `.md` agent is strictly less privileged than what it already runs.
 
@@ -597,9 +597,9 @@ Send a steering message to a running agent. The message interrupts after the cur
 
 | Command | Description |
 |---------|-------------|
-| `/agents` | Interactive agent management menu — agent types, running agents, scheduled jobs, workflow runs, settings |
+| `/crew` | Interactive agent management menu — agent types, running agents, scheduled jobs, workflow runs, settings |
 
-`/agents → Workflows` (shown only when [workflows](#persistent-settings) are on) opens a framed two-pane inspector over a run, with two levels of depth:
+`/crew → Workflows` (shown only when [workflows](#persistent-settings) are on) opens a framed two-pane inspector over a run, with two levels of depth:
 
 ```
  audit-src
@@ -636,7 +636,7 @@ Skipping is immediate for a running agent and for one held at a pause; an agent 
 
 Use the `=` form. The bare `--flag value` spelling consumes the next argument, so `pi --subagents-workflow-file review.js "do the thing"` would take the prompt as the flag's value. Composes with headless mode: `pi -p --subagents-workflow-file=review.js`. With no tool call to attach to, the run renders as a session entry and its result is handed to the model as context for its next turn.
 
-The `/agents` command opens an interactive menu:
+The `/crew` command opens an interactive menu:
 
 ```
 Running agents (2) — 1 running, 1 done     ← only shown when agents exist
@@ -679,7 +679,7 @@ There are two independent pools.
 
 **Background** (`maxConcurrent`, default 10). Excess agents are automatically queued and start as running agents complete. The widget shows queued agents as a collapsed count. Since agents run in the background by default, nearly every spawn takes a slot; the limit was raised from 4 so that ordinary parallel fan-outs don't queue.
 
-**Foreground** (`maxConcurrentForeground`, default `0` = unlimited). Off by default, so nothing changes unless you set it. pi dispatches a message's tool calls through `Promise.all`, so several `Agent` calls with `run_in_background: false` in one message have always started at once — this bounds that. Useful mainly with local models, where parallel agents thrash the prompt cache (upstream #253). A queued foreground agent appears in `/agents → Running agents` as `queued` and can be stopped there; its `Agent` call says so while it waits and then returns its result normally.
+**Foreground** (`maxConcurrentForeground`, default `0` = unlimited). Off by default, so nothing changes unless you set it. pi dispatches a message's tool calls through `Promise.all`, so several `Agent` calls with `run_in_background: false` in one message have always started at once — this bounds that. Useful mainly with local models, where parallel agents thrash the prompt cache (upstream #253). A queued foreground agent appears in `/crew → Running agents` as `queued` and can be stopped there; its `Agent` call says so while it waits and then returns its result normally.
 
 The two are deliberately **not** one limit. A foreground agent blocks the parent anyway — the parent could have done that work itself without paying a slot — so charging it to the background pool would let a saturated pool starve the main session.
 
@@ -701,11 +701,11 @@ Finished background agents send a notification to the main chat. If the main cha
 **Timeout behavior (`group`):** a 30-second timeout starts after the first agent of a group completes. If not all agents finish in time, a partial notification is sent with completed results and remaining agents continue with a shorter 15-second re-batch window for stragglers.
 
 **Configuration:**
-- Configure join mode in `/agents` → Settings → Join mode
+- Configure join mode in `/crew` → Settings → Join mode
 
 ## Model Scope
 
-**Opt-in:** off by default. Enable via `/agents → Settings → Scope models`.
+**Opt-in:** off by default. Enable via `/crew → Settings → Scope models`.
 
 When on, each subagent spawn's effective model is validated against pi's own `enabledModels` list (configured via pi's `/scoped-models` UI). pi-agents reads that list; it doesn't manage it. Both of pi's settings files are honored: global `~/.pi/agent/settings.json` and project-local `<cwd>/.pi/settings.json`. **Project overrides global** — mirrors pi's `SettingsManager` deep-merge, so a tighter per-project scope (hand-edited into the project settings) is respected.
 
@@ -728,7 +728,7 @@ When on, each subagent spawn's effective model is validated against pi's own `en
 
 ## Persistent Settings
 
-Open `/agents → Settings` to change project settings. These are saved in `.pi/subagents.json`. Personal defaults live in `~/.pi/agent/subagents.json`; edit that file yourself. Project values win when both files set the same option.
+Open `/crew → Settings` to change project settings. These are saved in `.pi/subagents.json`. Personal defaults live in `~/.pi/agent/subagents.json`; edit that file yourself. Project values win when both files set the same option.
 
 Most changes apply to new agents immediately. Options that change which tools or parameters the model sees need a new Pi session.
 
@@ -759,7 +759,7 @@ Most changes apply to new agents immediately. Options that change which tools or
 | `showModel` | `false` | Add model and reasoning level to the widget. Results and the viewer already show these. |
 | `viewerMarkdown` | `assistant` | `off`: plain text. `assistant`: format replies only. `all`: format tool results too; this can change how logs/diffs look. Press `m` in the viewer to switch. |
 | `fleetView` | `true` | Show the selectable main-chat/agent list below the editor. |
-| `kanbanEnabled` | `false` | Enable the optional live web interface at `/agents kban`. Native tools, task planning and execution remain available on or off; toggling never cancels work. Managed-task completion still requires recorded tests and three independent scores of at least 85%. |
+| `kanbanEnabled` | `false` | Enable the optional live web interface at `/crew kban`. Native tools, task planning and execution remain available on or off; toggling never cancels work. Managed-task completion still requires recorded tests and three independent scores of at least 85%. |
 | `widgetMode` | `background` | `all`: every agent. `background`: background only. `off`: no progress widget. |
 | `toolDescriptionMode` | `full` | `full`: detailed Agent help. `compact`: shorter help for smaller models. `custom`: your own help file. Applies next session. |
 
@@ -817,7 +817,7 @@ Agent lifecycle events are emitted via `pi.events.emit()` so other extensions ca
 | `subagents:scheduler_ready` | Scheduler bound to session, enabled jobs armed | `sessionId`, `jobCount` |
 | `subagents:ready` | RPC handlers registered and armed — fired on session start; not emitted in a session that excludes pi-agents | `{}` (empty object) |
 | `subagents:settings_loaded` | Persisted settings applied at extension init | `settings` (merged global + project) |
-| `subagents:settings_changed` | `/agents` → Settings mutation was applied | `settings`, `persisted` (`boolean` — `false` on write failure) |
+| `subagents:settings_changed` | `/crew` → Settings mutation was applied | `settings`, `persisted` (`boolean` — `false` on write failure) |
 
 The four agent-lifecycle events — `subagents:started`, `:completed`, `:failed`, `:compacted` — are emitted for **top-level agents only**; nested subagents and a workflow's children report through the parent or workflow that owns them. `subagents:usage` is the one event that is not scoped, on purpose: it is a ledger, not a lifecycle. It fires once per message for every agent, so summing `usage.cost.total` across it gives what this session's subagents spent, each message counted exactly once under the agent that spent it — unlike the ancestor records, which fold a nested child's spend into every parent. It fires regardless of `reportUsage`, which decides only whether the parent session's own totals include the spend.
 
@@ -981,7 +981,7 @@ Three levers, from narrowest to broadest:
 
 - **Per call** — omit `isolation`, or pass `isolation: "off"`. The explicit value exists because some models fill every optional parameter they are offered; with `worktree` as the only legal value they had no way to decline one (#231, #184).
 - **Per agent** — `isolation: off` in an agent file. Frontmatter is authoritative, so this refuses a worktree even when the caller passes `isolation: "worktree"` — the only way to override a caller. Workflow `agent()` calls are the exception: only the script's option decides there.
-- **Per project** — `"worktreeIsolation": false` in `subagents.json`. The `Agent` tool's `isolation` parameter disappears from the schema entirely, along with the usage-note bullet that describes it (so it costs the model no context and cannot be passed), and worktree creation is refused on every other path too: agent files, scheduled jobs, and cross-extension RPC. The `/agents` generator also stops offering `isolation:` when writing a new agent file. Use it on a repo large enough that a copy costs real time and disk. The schema and the description are both built at tool registration, so they appear or disappear in the next pi session; the refusal itself takes effect immediately.
+- **Per project** — `"worktreeIsolation": false` in `subagents.json`. The `Agent` tool's `isolation` parameter disappears from the schema entirely, along with the usage-note bullet that describes it (so it costs the model no context and cannot be passed), and worktree creation is refused on every other path too: agent files, scheduled jobs, and cross-extension RPC. The `/crew` generator also stops offering `isolation:` when writing a new agent file. Use it on a repo large enough that a copy costs real time and disk. The schema and the description are both built at tool registration, so they appear or disappear in the next pi session; the refusal itself takes effect immediately.
 
   Schema and prose are gated together on purpose. Leaving the bullet in would teach the model to pass a field that is no longer declared — accepted silently, then dropped — and since a refused worktree carries no note on the result, the model would have every reason to go on reporting a `pi-agent-*` branch that was never created. A custom tool description should use the `{{isolationGuideline}}` placeholder rather than hardcoding the bullet, for the same reason.
 
@@ -1039,7 +1039,7 @@ examples/
   agent-tool-description.md
 test/                 # vitest suite; e2e/ and perf/ subdirectories
 src/
-  index.ts            # Extension entry: tool/command registration, /agents menu, rendering
+  index.ts            # Extension entry: tool/command registration, /crew menu, rendering
   types.ts            # Type definitions (AgentConfig, AgentRecord, etc.)
 
   # Agent registry
@@ -1098,10 +1098,10 @@ src/
     conversation-viewer.ts # Live conversation overlay for viewing agent sessions
     viewer-keys.ts        # Viewer scroll keys resolved through user keybindings
     agent-mention.ts      # `@` roster (running, resumable, and startable agents) + popup rows
-    schedule-menu.ts      # /agents → Scheduled jobs submenu
+    schedule-menu.ts      # /crew → Scheduled jobs submenu
     select-item.ts        # Collision-safe ctx.ui.select wrapper (numbered rows)
     workflow-card.ts      # Inline workflow card (tool result and session entry)
-    workflow-dialog.ts    # /agents → Workflows two-pane inspector
+    workflow-dialog.ts    # /crew → Workflows two-pane inspector
 ```
 
 ## License
@@ -1116,6 +1116,6 @@ To prevent an orchestrator from accidentally choosing a different provider or un
 { "inheritParentModel": true }
 ```
 
-The same option is available in `/agents` → Settings → **Inherit parent model**. Reload Pi after changing it to refresh tool schemas. Runtime enforcement also protects calls made through an older schema. With the lock enabled, even a populated `model` argument or agent-file model pin cannot redirect a child. Workflow, nested, scheduled and cross-extension spawns use the same runner guard. Resumes switch an existing child back to the current parent's provider/model before prompting, including retries of failed sessions. Changing the main Pi model therefore changes the model inherited on the next spawn or resume. A missing parent model fails closed instead of selecting another provider.
+The same option is available in `/crew` → Settings → **Inherit parent model**. Reload Pi after changing it to refresh tool schemas. Runtime enforcement also protects calls made through an older schema. With the lock enabled, even a populated `model` argument or agent-file model pin cannot redirect a child. Workflow, nested, scheduled and cross-extension spawns use the same runner guard. Resumes switch an existing child back to the current parent's provider/model before prompting, including retries of failed sessions. Changing the main Pi model therefore changes the model inherited on the next spawn or resume. A missing parent model fails closed instead of selecting another provider.
 
 The lock is opt-in to preserve deliberately mixed-model setups. `scopeModels` remains a separate allowlist policy; it does not imply provider/model inheritance. With the lock off, existing override precedence remains unchanged. Empty, `default`, `inherit` and `parent` model fillers on Agent calls mean no override, not a fuzzy model search. This prevents model-selection mistakes, not provider outages, account restrictions on the parent's own model, or every possible API error.

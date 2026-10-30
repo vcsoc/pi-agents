@@ -51,7 +51,7 @@ export interface LoadCustomAgentsOptions {
 /**
  * Scan for custom agent .md files from multiple locations.
  * Discovery hierarchy (higher priority wins):
- *   1. Project:   <cwd>/.pi/agents/*.md (authoritative — also where /agents writes)
+ *   1. Project:   <cwd>/.pi/agents/*.md (authoritative — also where /crew writes)
  *   2. Workspace: <cwd>/.agents/agents/*.md (shared cross-tool .agents workspace, read-only)
  *   3. Global:    $PI_CODING_AGENT_DIR/agents/*.md (default: ~/.pi/agent/agents/*.md)
  *   4. Package:   paths declared by an installed pi package (read-only)

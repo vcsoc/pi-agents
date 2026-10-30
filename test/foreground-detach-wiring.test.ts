@@ -11,7 +11,7 @@
  *
  * ctrl+b is driven through the terminal-input listener the extension installs
  * on the session UI. The viewer's `b` is driven through the action the
- * extension hands FleetView — the same factory `/agents` uses — rather than
+ * extension hands FleetView — the same factory `/crew` uses — rather than
  * through overlay keystrokes; the key-to-action path is pinned in
  * `conversation-viewer.test.ts`.
  */
@@ -423,7 +423,7 @@ describe("Agent tool — foreground run sent to the background", () => {
     runs.finish("long job", "DONE");
   });
 
-  it("wires `b` in the /agents viewer to the same handoff", async () => {
+  it("wires `b` in the /crew viewer to the same handoff", async () => {
     const runs = controllableRuns();
     const { tools, commands } = boot();
 
@@ -442,7 +442,7 @@ describe("Agent tool — foreground run sent to the background", () => {
         viewer = factory({ mode: "regular", requestRender() {}, terminal: { columns: 120, rows: 40 } }, theme, undefined, done);
       })),
     };
-    const menu = commands.get("agents").handler("", ctx({ hasUI: true, ui }));
+    const menu = commands.get("crew").handler("", ctx({ hasUI: true, ui }));
     await vi.waitFor(() => expect(viewer).toBeDefined());
 
     viewer!.handleInput("b");

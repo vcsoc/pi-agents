@@ -208,7 +208,7 @@ export class ConversationViewer implements Component, Focusable {
      */
     private viewerMarkdown?: () => ViewerMarkdownMode,
     /**
-     * Persist a mode chosen with `m`, so the key and `/agents → Settings` mean
+     * Persist a mode chosen with `m`, so the key and `/crew → Settings` mean
      * the same thing. Omitted → `m` still cycles, viewer-locally.
      */
     private onMarkdownMode?: (mode: ViewerMarkdownMode) => void,

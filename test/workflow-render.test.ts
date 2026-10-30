@@ -459,7 +459,7 @@ describe("size warning", () => {
       progress: [agentEntry({ index: 0, label: "a" })],
       agentCount: 40,
     });
-    expect(lines.at(-1)).toBe("  ⚠ Large workflow · /agents → Workflows to stop");
+    expect(lines.at(-1)).toBe("  ⚠ Large workflow · /crew → Workflows to stop");
   });
 
   it("stays away for a small run", () => {

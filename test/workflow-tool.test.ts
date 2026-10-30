@@ -197,7 +197,7 @@ describe("createWorkflowHost — spawn mapping", () => {
 
   it("stamps its children with the run id and keeps them out of the pool", async () => {
     // Ownership, not decoration: the stamp is what removes a workflow's agents
-    // from the fleet list, the widget and the `/agents` menus, and what keeps
+    // from the fleet list, the widget and the `/crew` menus, and what keeps
     // one fan-out from filling the session's concurrency pool.
     const stub = stubManager();
     const host = createWorkflowHost({
@@ -1475,7 +1475,7 @@ describe("collisions with another extension", () => {
   });
 
   /**
-   * Drive `/agents → Settings` far enough to write the settings file.
+   * Drive `/crew → Settings` far enough to write the settings file.
    *
    * Any change writes the WHOLE snapshot, so which row is toggled does not
    * matter — row 0 is `Max concurrency`, whose single-value list re-applies the
@@ -1505,7 +1505,7 @@ describe("collisions with another extension", () => {
         input: vi.fn(async () => undefined),
       },
     });
-    await booted.commands.get("agents").handler("", context);
+    await booted.commands.get("crew").handler("", context);
     return context;
   }
 

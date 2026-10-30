@@ -48,7 +48,7 @@ For the channel list, the reply envelope, the per-channel snippets and the event
 Four things that are not obvious from the tables:
 
 - **Nothing is required at runtime.** `description` is non-optional in TypeScript and never validated. A spawn with no `options` at all is legal and is what "returns agent id on success" in `test/cross-extension-rpc.test.ts` pins.
-- **`bypassQueue` is not stripped.** Its own doc comment scopes it to the scheduler and the `/agents` generator, but a bus caller can set it and skip the `maxConcurrent` check.
+- **`bypassQueue` is not stripped.** Its own doc comment scopes it to the scheduler and the `/crew` generator, but a bus caller can set it and skip the `maxConcurrent` check.
 - **`structuredOutput` is documented "set only by the workflow host"** (its field comment on `SpawnOptions`) and is also not stripped.
 - **`signal` and the `on*` callbacks are function values.** They work only because the bus is in-process. A caller that genuinely serializes its payload cannot use them, and they arrive as `undefined` rather than failing.
 

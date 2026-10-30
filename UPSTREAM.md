@@ -20,8 +20,10 @@ pi-agents is a fork of pi-subagents.
 
 ## Retained Interfaces
 
-The Agent, SubagentWorkflow, get_subagent_result, and steer_subagent tool names, /agents command, subagents:* events/RPC, pi.subagents package resources, subagents.json settings, and agent/workflow resource directories are retained. The alternate top-level package-resource declaration is pi-agents; prefer pi.subagents for portable packages. The manager registry is Symbol.for("pi-agents:manager").
+The extension command is now /crew, including version, demo, tasks and kban subcommands. Reload Pi to replace the old command registration; restart if the loaded version remains stale.
+
+The Agent, SubagentWorkflow, get_subagent_result, and steer_subagent tool names, subagents:* events/RPC, pi.subagents package resources, subagents.json settings, and agent/workflow resource directories are retained. The alternate top-level package-resource declaration is pi-agents; prefer pi.subagents for portable packages. The manager registry is Symbol.for("pi-agents:manager").
 
 Claude-style agent files, workflow scripts, badges, mention syntax, and tool conventions remain supported. None require the Claude CLI or an Anthropic provider. The preserved upstream reference documentation includes Claude examples and historical design notes; they do not constrain which provider runs an agent.
 
-Do not enable this fork and upstream simultaneously: they register the same tool and command names. No automatic migration or changes to personal Pi settings are performed by this repository.
+Do not enable this fork and upstream simultaneously: they register the same tool names. No automatic migration or changes to personal Pi settings are performed by this repository.

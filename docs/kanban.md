@@ -4,13 +4,13 @@ The native Pi harness is always the operational home for pi-agents. Kanban is an
 
 ## Enable And Open
 
-1. Open `/agents`, choose Settings, and turn Kanban on.
-2. Run `/agents kban`. Pi opens a browser and also prints the private URL.
+1. Open `/crew`, choose Settings, and turn Kanban on.
+2. Run `/crew kban`. Pi opens a browser and also prints the private URL.
 3. Ask the main agent to break your request into scopes, assign each task, define its acceptance rubric, and release the work.
 
 You can also set `"kanbanEnabled": true` in project or personal `subagents.json` and reload Pi. The setting controls only access to the web interface. Enabling it never stops native agents; disabling it closes the local server without cancelling work, revoking task bindings, replacing sessions, hiding task tools or resetting evidence. Re-enabling displays the same harness task service, without duplicate dispatch. A trusted project is required for task-service activation.
 
-The `Kanban` task tool is registered before an agent turn in trusted projects regardless of the web setting. The main agent can use it alongside ordinary tools, Agent and workflows. `/agents tasks` lists tasks and retained native runs without a browser. `/agents tasks pause <run-id>` explicitly stops one current native run, and `/agents tasks pause-all` pauses pending tasks, stops the local scheduler and cancels current native agents/workflows. These are deliberate cancellation controls, not effects of toggling the view. Paused task evidence is invalidated; existing native agent conversations can be explicitly resumed with Agent, and stopped workflows can be explicitly resumed through SubagentWorkflow. No automatic replay is promised.
+The `Kanban` task tool is registered before an agent turn in trusted projects regardless of the web setting. The main agent can use it alongside ordinary tools, Agent and workflows. `/crew tasks` lists tasks and retained native runs without a browser. `/crew tasks pause <run-id>` explicitly stops one current native run, and `/crew tasks pause-all` pauses pending tasks, stops the local scheduler and cancels current native agents/workflows. These are deliberate cancellation controls, not effects of toggling the view. Paused task evidence is invalidated; existing native agent conversations can be explicitly resumed with Agent, and stopped workflows can be explicitly resumed through SubagentWorkflow. No automatic replay is promised.
 
 Live Harness Runs shows the actual retained top-level agent/workflow records in this Pi session, including ordinary non-task work. Task planning/history is durable and project-shared; native run visibility is session-local and completed native records have the fleet's normal retention limit. Native runs are not fabricated into task-certified Done cards. Managed task workers still enforce their assigned capabilities and independent evidence gates.
 

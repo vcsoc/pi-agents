@@ -14,7 +14,7 @@ No installed package, live session, settings, application or external board was 
 - Candidate snapshot:
   `/Users/chris/.pi/agent/kanban/1b0d6fa4133f590e3e16100af508c995c30b14047fd2d3f03d35fd8a3056ef24/snapshot-fd8bfeb7-3b11-43b4-8aad-96d59a424f6e-1-5c820627-1142-4c7e-beef-b043e1d53e32`
 
-The version deliberately does not change: `/agents version` alone cannot identify
+The version deliberately does not change: `/crew version` alone cannot identify
 this same-version source fix. Compare bytes as well as the loaded version.
 
 ## Transport contract
@@ -47,7 +47,7 @@ create a recursive workaround task or automatically resume suspended ancestors.
    owning caller through normal conflict-checked snapshot integration. Preserve
    concurrent session-directory repairs and caller edits; if integration refuses
    its baseline, stop and reconcile through the existing owner, never force-copy.
-2. Record `/agents version`, installed package path, `git status --short`, HEAD,
+2. Record `/crew version`, installed package path, `git status --short`, HEAD,
    package version and `shasum -a 256 src/kanban/execution.ts` in that installed
    checkout. Recheck the candidate module hash above against accepted source.
    Installed version must still be `0.1.4` and execution bytes must match the
@@ -73,7 +73,7 @@ create a recursive workaround task or automatically resume suspended ancestors.
    compare-and-swap guarantee against hostile concurrent writers.
 6. The user invokes supported `/reload` from the idle main Pi session, never from
    an in-flight worker. Reload replaces session-bound extension state. Confirm
-   `/agents version` and installed module hash, and run a read-only >64k enumeration
+   `/crew version` and installed module hash, and run a read-only >64k enumeration
    smoke check verifying async `fingerprint` equals `sourceFingerprint` and that
    discarded-prefix mutation is detected in a disposable fixture. Use the tests
    in `test/kanban-execution.test.ts`; do not mutate retained parent/application
@@ -92,4 +92,4 @@ recovery must be established before an orchestrator explicitly considers those
 retained tasks. Runtime completion here is neither activation nor parent recovery.
 
 See the existing [Kanban lifecycle](kanban.md) for certification and integration
-rules and the README for `/reload` / `/agents version` behavior.
+rules and the README for `/reload` / `/crew version` behavior.

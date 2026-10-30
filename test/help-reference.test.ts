@@ -33,7 +33,7 @@ describe("plain-language help reference", () => {
   });
 
   it("documents Git installation and separates storage and sandbox limitations", () => {
-    expect(readme).toContain("pi install https://github.com/vcsoc/pi-agents.git");
+    expect(readme).toContain("pi install https://github.com/vcsoc/pi-crew.git");
     expect(readme).toContain("sessions, `.output` logs, memory files, and worktree commits are separate");
     expect(readme).toContain("not operating-system sandboxes");
   });

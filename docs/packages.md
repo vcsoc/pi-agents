@@ -137,7 +137,7 @@ Saved workflows resolve first-hit-wins over the same ordering, so package direct
 
 One consequence worth knowing: a package agent *does* outrank a built-in. A package could ship a `operate` — which is also the default `fallbackSubagent` — and take over unspecified delegation. Narrow the gate below if that matters for your setup.
 
-### In `/agents`
+### In `/crew`
 
 A package agent is listed with a `▪` badge and is read-only: its file lives under pi's install root, where an edit is lost on the next `pi update` and a delete is undone by the next `pi install`.
 
@@ -169,7 +169,7 @@ A list entry matches the unscoped short name (`@acme/tools` → `tools`), the fu
 
 The two are separate on purpose: an agent is markdown handed to a model, a workflow is JavaScript this extension executes, so package agents can be accepted while package workflow scripts are refused.
 
-Both appear in `/agents → Settings` as on/off rows. An allowlist is hand-written in `subagents.json`; toggling the row replaces it, and the toast says what it replaced.
+Both appear in `/crew → Settings` as on/off rows. An allowlist is hand-written in `subagents.json`; toggling the row replaces it, and the toast says what it replaced.
 
 ### Why on by default
 
@@ -185,10 +185,10 @@ A declared `.md` agent is strictly less privileged than what the same package al
 2. Does `package.json` carry `pi.subagents` (or `pi-agents`)? A `pi` key that declares only `extensions` contributes no agents; the conventional `agents/` directory is not scanned.
 3. Is the file `*.md` directly inside a declared directory? The scan is not recursive.
 4. Does the frontmatter parse, and does it have a `name:`? A broken file is skipped with a `[pi-agents] Skipping agent file …` warning on stderr.
-5. Is `packageAgents` set to `false` or to a list that does not include it? Check `/agents → Settings → Package agents`.
+5. Is `packageAgents` set to `false` or to a list that does not include it? Check `/crew → Settings → Package agents`.
 6. Is the package configured only in an untrusted project's `.pi/settings.json`? Trust the project, or install it globally.
 
-**It appears but a different one runs.** A local file of the same name outranks it. `/agents` shows the badge of whichever won — `•` project, `◦` global, `▪` package.
+**It appears but a different one runs.** A local file of the same name outranks it. `/crew` shows the badge of whichever won — `•` project, `◦` global, `▪` package.
 
 **Edits to the package file do nothing.** Agents reload on every `Agent` call, so a local-path install picks up edits immediately. An npm or git install is a copy under `~/.pi/agent/{npm,git}/`; edit the source and reinstall, or install the local path during development.
 

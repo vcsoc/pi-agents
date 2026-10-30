@@ -1,10 +1,10 @@
-// `/agents → Agent types` badges each row with where the agent came from, and
+// `/crew → Agent types` badges each row with where the agent came from, and
 // prints a legend explaining the badges. Those two had drifted apart: the `▪`
 // package badge shipped without a legend key, so a package agent rendered a
 // glyph nothing on screen explained.
 //
 // These helpers live in src/agent-source-badge.ts rather than inside the
-// `/agents` command closure because `registerCommand` is mocked in every wiring
+// `/crew` command closure because `registerCommand` is mocked in every wiring
 // test, which is why the list rendering had no coverage at all.
 
 import { describe, expect, it } from "vitest";

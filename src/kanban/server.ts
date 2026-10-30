@@ -34,7 +34,7 @@ export async function startKanbanServer(controller: KanbanController | ReadOnlyK
     }
     const auth = Buffer.from(req.headers.authorization ?? "");
     const expected = Buffer.from(`Bearer ${token}`);
-    if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) { send(res, 401, { error: "Open the board from /agents kban to authenticate" }); return; }
+    if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) { send(res, 401, { error: "Open the board from /crew kban to authenticate" }); return; }
     try {
       if (req.method === "GET" && url.pathname === "/api/board") { send(res, 200, boardSnapshot()); return; }
       if (req.method === "GET" && url.pathname === "/api/events") {

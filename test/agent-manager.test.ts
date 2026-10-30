@@ -2383,7 +2383,7 @@ describe("AgentManager — background resume", () => {
 
   // A detached resume returns while the record is still "running", so nothing
   // stops a second resume of the same agent. Starting one would replace
-  // record.abortController — leaving the live run unreachable from /agents stop
+  // record.abortController — leaving the live run unreachable from /crew stop
   // and abortAll() — and then reject from session.prompt(), whose settle path
   // would report a failure and abort the children of a run still in progress.
   it("refuses to background-resume an agent whose run is still in flight", async () => {

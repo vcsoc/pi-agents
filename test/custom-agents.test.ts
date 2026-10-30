@@ -601,7 +601,7 @@ Agent prompt.`);
   });
 
   it("records the file it was read from, not the one its type would name", () => {
-    // `/agents` edits `sourcePath`: probing for `<type>.md` finds nothing here,
+    // `/crew` edits `sourcePath`: probing for `<type>.md` finds nothing here,
     // and its no-file branch writes a stub that loses to this file on load.
     writeAgent("blubb", `---
 name: code-review
@@ -1054,7 +1054,7 @@ Good body.`);
     }
   });
 
-  // `/agents → Eject` writes an AgentConfig back out as frontmatter. That writer
+  // `/crew → Eject` writes an AgentConfig back out as frontmatter. That writer
   // and this loader are the two halves of one format, but nothing pinned them
   // together — so a field can serialize to something the loader reads back
   // differently, and the agent silently changes shape on eject.
@@ -1278,7 +1278,7 @@ describe("package-provided agents", () => {
     expect(load().get("reviewer")?.description).toBe("workspace");
   });
 
-  it("is disabled by a local stub, which is how /agents turns one off", () => {
+  it("is disabled by a local stub, which is how /crew turns one off", () => {
     writePackageAgent("reviewer", "---\nname: reviewer\ndescription: package\n---\nP");
     writeLocalAgent(".pi", "reviewer", "---\nenabled: false\n---\n");
 

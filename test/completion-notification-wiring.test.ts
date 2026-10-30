@@ -103,7 +103,7 @@ async function spawnBackground(
 }
 
 describe("background completion notification wiring", () => {
-  it("runs /agents demo natively with four bounded tool-free agents and no certification", async () => {
+  it("runs /crew demo natively with four bounded tool-free agents and no certification", async () => {
     vi.mocked(runAgent).mockImplementation(async (_ctx, _type, prompt, options) => {
       expect(options.kanban).toBeDefined();
       expect(() => options.kanban!.assertAllowed("bash")).toThrow(/cannot execute tools/);
@@ -111,7 +111,7 @@ describe("background completion notification wiring", () => {
     });
     const { pi, handlers } = makePi();
     subagentsExtension(pi);
-    const command = vi.mocked((pi as any).registerCommand).mock.calls.find((call: any[]) => call[0] === "agents") as any;
+    const command = vi.mocked((pi as any).registerCommand).mock.calls.find((call: any[]) => call[0] === "crew") as any;
     try {
       await command[1].handler("demo", makeHeadlessCtx());
       expect(pi.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ customType: "agents-demo", content: expect.stringContaining("PASS: two workers") }), { triggerTurn: false });

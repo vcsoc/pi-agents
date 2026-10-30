@@ -57,7 +57,7 @@ const WORKFLOW_EXTENSION = ".js";
  * skills — a package offers a workflow, it never takes a name away from you.
  *
  * The `packageWorkflows` gate and pi's project-trust answer are session state in
- * package-resources.ts rather than parameters here, so a gate set in `/agents`
+ * package-resources.ts rather than parameters here, so a gate set in `/crew`
  * reaches this without an options bag travelling through `resolveWorkflowScript`,
  * `resolveWorkflowSource` and `readSavedWorkflow` purely to be consulted once.
  */

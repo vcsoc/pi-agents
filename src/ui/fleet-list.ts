@@ -140,7 +140,7 @@ export class FleetList {
     private viewerMarkdown?: () => ViewerMarkdownMode,
     /**
      * Persist a mode chosen with `m` in that overlay, so the key means the same
-     * thing here as it does from `/agents` — one setting, not one per entry
+     * thing here as it does from `/crew` — one setting, not one per entry
      * point. Omitted → `m` still cycles, viewer-locally.
      */
     private onViewerMarkdown?: (mode: ViewerMarkdownMode) => void,

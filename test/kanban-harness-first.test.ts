@@ -59,14 +59,16 @@ const spec = { holdInBacklog: true, title: "Native task", scope: "Verify native 
 
 describe("harness-first extension lifecycle", () => {
   it("reports the loaded package version without starting agents or opening the interface", async () => {
-    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "agents")[1];
+    expect(pi.registerCommand.mock.calls.some(([name]: [string]) => name === "agents")).toBe(false);
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    expect(command.description).toContain("/crew version");
     const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
     const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
     expect(lock.version).toBe(manifest.version);
     expect(lock.packages[""].version).toBe(manifest.version);
     const opened = vi.mocked(startKanbanServer).mock.calls.length;
     await command.handler("  version  ", ctx);
-    expect(ctx.ui.notify).toHaveBeenCalledWith(`pi-agents v${manifest.version} (loaded)`, "info");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(`pi-crew v${manifest.version} (loaded)`, "info");
     expect(vi.mocked(startKanbanServer).mock.calls).toHaveLength(opened);
     expect(tools.has("Kanban")).toBe(false);
   });
@@ -86,7 +88,7 @@ describe("harness-first extension lifecycle", () => {
     // Native delegation remains usable while the optional interface is enabled.
     const second = await call("Agent", { prompt: "second fixture", description: "Second native fixture", subagent_type: "operate", run_in_background: true });
     expect(second.content[0].text).toContain("Agent ID:");
-    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "agents")[1];
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
     await command.handler("kban", ctx);
     const web = await vi.mocked(startKanbanServer).mock.results.at(-1)!.value;
     state.toggle!(false);
@@ -128,7 +130,7 @@ describe("harness-first extension lifecycle", () => {
     const web = { url: "http://127.0.0.1/#late", close: vi.fn(async () => {}) };
     let opened!: (value: typeof web) => void;
     vi.mocked(startKanbanServer).mockImplementationOnce(() => new Promise(resolve => { opened = resolve; }));
-    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "agents")[1];
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
     const opening = command.handler("kban", ctx);
     state.toggle!(false); opened(web); await opening;
     expect(web.close).toHaveBeenCalledOnce();

@@ -1,5 +1,5 @@
 /**
- * workflow-dialog.ts — the `/agents → Workflows` two-pane inspector.
+ * workflow-dialog.ts — the `/crew → Workflows` two-pane inspector.
  *
  * ```
  *  review-changes
@@ -1017,7 +1017,7 @@ export function plainWorkflowDialogLines(lines: readonly WorkflowCardLine[]): st
 }
 
 /**
- * The `/agents → Workflows` overlay.
+ * The `/crew → Workflows` overlay.
  *
  * Deliberately thin: it owns the spinner timer and the theme, and delegates
  * everything else to the two pure functions above. `source` is re-read every

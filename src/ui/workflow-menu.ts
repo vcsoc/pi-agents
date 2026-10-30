@@ -1,7 +1,7 @@
 /**
- * workflow-menu.ts — `/agents → Workflows`, and the run inspector behind it.
+ * workflow-menu.ts — `/crew → Workflows`, and the run inspector behind it.
  *
- * The same shape `schedule-menu.ts` has for `/agents → Scheduled jobs`: the
+ * The same shape `schedule-menu.ts` has for `/crew → Scheduled jobs`: the
  * submenu and the overlay it opens live here, and everything they need arrives
  * as {@link WorkflowMenuDeps} rather than through a closure. The inspector is
  * reached from two places — this menu and a `workflow` row in the fleet list —
@@ -163,7 +163,7 @@ export function openWorkflowFromFleet(id: string, deps: WorkflowMenuDeps): Promi
   return showWorkflowDialog(ctx, task, deps);
 }
 
-/** `/agents → Workflows` — list this session's runs, open one. */
+/** `/crew → Workflows` — list this session's runs, open one. */
 export async function showWorkflowsMenu(
   ctx: ExtensionCommandContext,
   deps: WorkflowMenuDeps,

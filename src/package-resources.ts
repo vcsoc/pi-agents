@@ -562,7 +562,7 @@ function resolved(cwd: string, kind: PackageResourceKind, opts: PackageDiscovery
 
 /**
  * Name of the installed package that provided `path`, or undefined when no
- * admitted package owns it. What `/agents` shows so a package agent can name its
+ * admitted package owns it. What `/crew` shows so a package agent can name its
  * origin, and what a user needs in order to write a `packageAgents` allowlist.
  *
  * `kind` selects which gate to consult, because the two are configured

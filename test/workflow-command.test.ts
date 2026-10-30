@@ -1,5 +1,5 @@
 /**
- * workflow-command.test.ts — the `/agents → Workflows` run inspector.
+ * workflow-command.test.ts — the `/crew → Workflows` run inspector.
  *
  * The dialog itself is covered by workflow-dialog.test.ts; what is untested
  * until here is the screen around it: what happens with no runs, one run, or
@@ -7,7 +7,7 @@
  * than only looking like it did.
  *
  * It is reached through the agents menu rather than its own command, so every
- * test here drives `/agents` and picks the entry — which also pins that the
+ * test here drives `/crew` and picks the entry — which also pins that the
  * entry exists and is spelled the way the menu router expects.
  */
 
@@ -16,12 +16,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import subagentsExtension from "../src/index.js";
 import { ctx, type Hermetic, hermeticDir, makePi } from "./helpers/boot-extension.js";
 
-/** Boot the real extension and hand back its `/agents` command. */
+/** Boot the real extension and hand back its `/crew` command. */
 function bootCommand() {
   const booted = makePi();
   subagentsExtension(booted.pi);
-  const command = booted.commands.get("agents");
-  if (!command) throw new Error("the extension did not register /agents");
+  const command = booted.commands.get("crew");
+  if (!command) throw new Error("the extension did not register /crew");
   return { ...booted, command };
 }
 
@@ -83,16 +83,16 @@ function commandCtx() {
   };
 }
 
-describe("/agents → Workflows", () => {
+describe("/crew → Workflows", () => {
   let hermetic: Hermetic;
 
   // Workflows are opt-in, so every test that expects the feature to exist has
-  // to turn it on — the same thing a user does once in /agents → Settings.
+  // to turn it on — the same thing a user does once in /crew → Settings.
   beforeEach(() => { hermetic = hermeticDir({ settings: { workflowsEnabled: true } }); });
   afterEach(() => { hermetic.restore(); });
 
   it("registers no top-level /workflows command", () => {
-    // It lives under /agents instead, deliberately: pi renames a duplicate
+    // It lives under /crew instead, deliberately: pi renames a duplicate
     // command to `/workflows:1` and `/workflows:2`, which breaks the bare name
     // for both extensions. Pinned because re-adding it would be silent.
     const booted = bootCommand();

@@ -243,7 +243,7 @@ export class SubagentScheduler {
     try {
       // Re-resolve at fire time against the registry as it stands. This does not
       // reload from disk (the scheduler has no reason to rebuild process-global
-      // state from a timer), so it catches changes that went through /agents or
+      // state from a timer), so it catches changes that went through /crew or
       // an Agent call — not a file deleted directly from a shell. The catch below turns
       // this into lastStatus: "error" plus an error event, like any other
       // fire-time failure.

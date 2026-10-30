@@ -37,7 +37,7 @@ function wizard(modelChoice: string) {
   const pi = {
     registerMessageRenderer: vi.fn(), registerEntryRenderer: vi.fn(),
     registerTool: vi.fn(), registerFlag: vi.fn(), getFlag: vi.fn(),
-    registerCommand: vi.fn((name, command) => { if (name === "agents") handler = command.handler; }),
+    registerCommand: vi.fn((name, command) => { if (name === "crew") handler = command.handler; }),
     getAllTools: vi.fn(() => []), setActiveTools: vi.fn(), on: vi.fn(),
     events: { emit: vi.fn(), on: vi.fn(() => vi.fn()) }, appendEntry: vi.fn(), sendMessage: vi.fn(),
   } as unknown as ExtensionAPI;

@@ -14,7 +14,7 @@ export default defineConfig({
   test: {
     server: { deps: { inline: [/@earendil-works\/pi-/] } },
     // Local reporting only — deliberately no `thresholds`, and not wired into
-    // CI. src/index.ts is mostly the /agents wizard, which is TUI flow with
+    // CI. src/index.ts is mostly the /crew wizard, which is TUI flow with
     // almost no logic and is not worth a fake-TUI harness; any global floor
     // would therefore either sit below what the rest of the suite achieves
     // (and ratchet down as tests are deleted) or force exactly that harness.

@@ -1118,7 +1118,7 @@ describe("resuming an evicted agent by name", () => {
   it("refuses to reopen a conversation under a substitute agent", async () => {
     // resolveSpawnType falls back to operate for a type it cannot
     // resolve (#183) — and "cannot resolve" includes merely disabled, which
-    // `/agents → Disable` does at any time. Inheriting that here would reopen
+    // `/crew → Disable` does at any time. Inheriting that here would reopen
     // an inspect transcript under operate's prompt and tools while
     // announcing "Resuming @scout", then re-tombstone under the substitute so
     // the handle never finds its way back.
@@ -1152,7 +1152,7 @@ describe("resuming an evicted agent by name", () => {
 
   it("resumes again once the agent is re-enabled", async () => {
     // So the refusal keeps the tombstone: dropping it would make a temporary
-    // `/agents → Disable` permanently lose the conversation.
+    // `/crew → Disable` permanently lose the conversation.
     hermetic = hermeticDir({
       settings: { outputTranscript: false },
       agentFiles: { scout: "---\ndescription: scouts\nenabled: false\n---\nbody" },

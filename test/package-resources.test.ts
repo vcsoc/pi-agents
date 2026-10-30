@@ -370,7 +370,7 @@ describe("discovery through pi's configured packages", () => {
     });
   });
 
-  // `/agents` badges a package agent `▪`, which says a package won but not
+  // `/crew` badges a package agent `▪`, which says a package won but not
   // which one. The name comes from tracing the loaded file's `sourcePath` back
   // to the package root it lives under.
   describe("packageNameForPath", () => {
@@ -387,7 +387,7 @@ describe("discovery through pi's configured packages", () => {
     });
 
     it("reports the scoped package name in full", () => {
-      // `/agents` shows this string verbatim, so the scope must survive — the
+      // `/crew` shows this string verbatim, so the scope must survive — the
       // unscoped `shortName` is for allowlist matching, not for display.
       const root = join(tmpDir, "node_modules", "@acme", "tools");
       mkdirSync(join(root, "agents"), { recursive: true });

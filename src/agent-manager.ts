@@ -123,7 +123,7 @@ function occupiesPoolSlot(
  * another agent or a workflow owns.
  *
  * The single definition behind every user-facing surface — the fleet list, the
- * widget, the `/agents` menus, `@handle` resolution, and the completion events
+ * widget, the `/crew` menus, `@handle` resolution, and the completion events
  * and session entries. An owned child reports through its owner, so surfacing
  * it separately would double-count the same work in the places a person reads.
  */
@@ -212,7 +212,7 @@ interface SpawnOptions {
    * exceeds the limit rather than being invisible to it.
    *
    * Used by the scheduler, so a fired job can't be deferred past its trigger
-   * window, and by the `/agents` agent-file generator, which has no way to
+   * window, and by the `/crew` agent-file generator, which has no way to
    * cancel a wait (see its call site).
    */
   bypassQueue?: boolean;
@@ -741,7 +741,7 @@ export class AgentManager {
     //
     // The pool is resolved ONCE, here, and recorded for `settleRun`:
     // `poolFor` reads `maxConcurrentForeground`, which the user can change from
-    // `/agents → Settings` mid-run, so recomputing it at settle time would
+    // `/crew → Settings` mid-run, so recomputing it at settle time would
     // decrement a pool this run never charged (counter underflow, limit
     // silently lifted) or skip the decrement for one it did (leaked slot —
     // every later blocking spawn queues forever). Only `sendToBackground`
@@ -1153,7 +1153,7 @@ export class AgentManager {
    * promise, in-flight turn, transcript and worktree all continue under the
    * same id; what changes is who answers for it. The caller's parent-abort
    * listener comes off (its Esc no longer reaches the run — `abort()` and
-   * `/agents` still do), the slot moves to the background pool, and the run
+   * `/crew` still do), the slot moves to the background pool, and the run
    * then settles through the ordinary background path, since `settleRun`
    * reads the live `isBackground` and `chargedPool`.
    *
@@ -1209,7 +1209,7 @@ export class AgentManager {
       // gets control back while the record stays "running", so nothing stops the
       // model from resuming the same agent again. Starting a second run would
       // overwrite record.abortController — orphaning the live run beyond the
-      // reach of `/agents` stop and abortAll() — double-count the pool slot, and
+      // reach of `/crew` stop and abortAll() — double-count the pool slot, and
       // then reject from session.prompt() with "Agent is already processing",
       // whose settle path would abort the LIVE run's children and report a
       // failure for a run that is still going. Refuse instead, leaving the
@@ -1259,7 +1259,7 @@ export class AgentManager {
     record.error = undefined;
     // Fresh controller, as on the detached path: `abort()` fires whatever
     // `record.abortController` holds, and the spawn's has long settled — so a
-    // stop from `/agents` or the caller's Esc would mark the record stopped
+    // stop from `/crew` or the caller's Esc would mark the record stopped
     // while the resumed prompt ran on to completion.
     const abortController = new AbortController();
     record.abortController = abortController;
@@ -1360,7 +1360,7 @@ export class AgentManager {
     if (occupiesPoolSlot(record)) this.runningBackground++;
     this.onStart?.(record);
 
-    // Fresh abort controller so /agents stop and steering target THIS run rather
+    // Fresh abort controller so /crew stop and steering target THIS run rather
     // than the previous one's settled controller.
     const abortController = new AbortController();
     record.abortController = abortController;
