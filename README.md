@@ -301,7 +301,9 @@ When the optional Kanban interface is enabled, the command opens a separate, rea
 
 **The native Pi harness always owns execution.** With Kanban off (the default), manage agents directly through `/crew`, Agent, results and steering. No Kanban tool, board initialization, task dispatch, rubric assignment or managed acceptance workflow is used; progress and results stay in the human-readable native agents harness. Complete small work directly and delegate only when useful, without unnecessary task handoffs or polling. Turning Kanban on enables its task tool, planning/acceptance workflow and web board in trusted projects. Turning it off hides the tool, removes its workflow guidance and stops new task dispatch without cancelling already-running workers or discarding sessions/evidence. Those workers can finish their existing checkpoint; subsequent roles wait until Kanban is enabled again. `/crew tasks` and `/crew kban` do not activate Kanban while it is off.
 
-Run `/crew on` to enable Kanban or `/crew off` to disable it and use native agents directly. Both commands apply immediately, save the project setting, and leave existing workers intact without opening the menu or browser. You can also use **Kanban** in `/crew` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`). With Kanban enabled, run:
+`/crew on` and `/crew off` control the **entire extension**, not Kanban. Off withdraws pi-crew tools and workflow guidance, stops active/queued agents and workflows plus scheduling, disconnects RPC/routing, and hides its live UI. Agent records, sessions and task evidence are retained; on does not restart interrupted runs. Both commands persist the project `extensionEnabled` setting. `/crew on` and `/crew version` remain available while off; other commands explain how to re-enable it. The progress widget is headed **Crew**.
+
+Kanban is a separate preference: use **Kanban** in `/crew` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`). Master on/off never changes that preference. Turn only Kanban off to keep pi-crew active with direct native-agent management. With the extension and Kanban enabled, run:
 
 ```text
 /crew kban
@@ -734,6 +736,7 @@ Most changes apply to new agents immediately. Options that change which tools or
 
 | Setting | Default | What it does |
 |---|---|---|
+| `extensionEnabled` | `true` | Master pi-crew switch, controlled by `/crew on` and `/crew off`. Off withdraws its tools, prompts, UI, scheduling and agent routing, and stops active/queued extension work without deleting records. Other feature preferences remain unchanged; on does not restart interrupted runs. |
 | `maxConcurrent` | `10` | Background agents running at once. Extra agents wait. Minimum: 1. |
 | `maxConcurrentForeground` | `0` | Foreground agents running at once. `0` means unlimited. Does not limit foreground resumes. |
 | `defaultMaxTurns` | `0` | Model-response turns before wrap-up. `0` means unlimited. Agent files and calls can set their own limit. |

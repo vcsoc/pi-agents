@@ -3,10 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const state = vi.hoisted(() => ({ toggle: undefined as undefined | ((enabled: boolean) => void) }));
+const state = vi.hoisted(() => ({ toggle: undefined as undefined | ((enabled: boolean) => void), bootSettings: {} as Record<string, boolean> }));
 vi.mock("../src/settings.js", async () => {
   const actual = await vi.importActual<typeof import("../src/settings.js")>("../src/settings.js");
-  return { ...actual, loadSettings: () => ({}), applyAndEmitLoaded: (appliers: any) => { state.toggle = appliers.setKanbanEnabled; } };
+  return { ...actual, loadSettings: () => state.bootSettings, applyAndEmitLoaded: (appliers: any) => { state.toggle = appliers.setKanbanEnabled; actual.applySettings(state.bootSettings, appliers); } };
 });
 vi.mock("../src/agent-runner.js", async () => {
   const actual = await vi.importActual<typeof import("../src/agent-runner.js")>("../src/agent-runner.js");
@@ -15,10 +15,13 @@ vi.mock("../src/agent-runner.js", async () => {
   })) };
 });
 vi.mock("node:child_process", async () => ({ ...await vi.importActual<typeof import("node:child_process")>("node:child_process"), spawn: vi.fn(() => ({ on: vi.fn(), unref: vi.fn() })) }));
+vi.mock("../src/mention-clone.js", () => ({ runMentionClone: vi.fn() }));
 vi.mock("../src/kanban/server.js", () => ({ startKanbanServer: vi.fn(async () => ({ url: "http://127.0.0.1/#fixture", close: vi.fn(async () => {}) })) }));
 
+import { runAgent } from "../src/agent-runner.js";
 import extension from "../src/index.js";
 import { startKanbanServer } from "../src/kanban/server.js";
+import { runMentionClone } from "../src/mention-clone.js";
 
 let root: string;
 let hooks: Map<string, any>;
@@ -45,6 +48,7 @@ beforeEach(() => {
     modelRegistry: { find: vi.fn(), getAvailable: () => [] },
     sessionManager: { getSessionId: () => "harness-first-fixture", getBranch: () => [] }, getSystemPrompt: () => "parent context",
   };
+  state.bootSettings = {};
   extension(pi);
 });
 afterEach(async () => {
@@ -58,34 +62,122 @@ const data = (result: any) => JSON.parse(result.content[0].text);
 const spec = { holdInBacklog: true, title: "Native task", scope: "Verify native ownership", assignee: "operate", rubric: [{ title: "Native ownership preserved", weight: 100 }] };
 
 describe("harness-first extension lifecycle", () => {
-  it("toggles and persists Kanban through /crew on and off without opening the menu", async () => {
+  it.each([true, false])("toggles the entire extension independently of Kanban preference %s", async kanbanEnabled => {
+    state.toggle!(kanbanEnabled);
+    await hooks.get("before_agent_start")({}, ctx);
     const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    const staleAgent = tools.get("Agent");
     const opened = vi.mocked(startKanbanServer).mock.calls.length;
-    for (const mode of ["on", "on", "off", "off"]) {
+    for (const mode of ["off", "off", "on", "on"]) {
       await command.handler(`  ${mode}  `, ctx);
       const saved = JSON.parse(readFileSync(join(ctx.cwd, ".pi", "subagents.json"), "utf8"));
-      expect(saved.kanbanEnabled).toBe(mode === "on");
-      expect(pi.events.emit).toHaveBeenLastCalledWith("subagents:settings_changed", expect.objectContaining({ persisted: true, settings: expect.objectContaining({ kanbanEnabled: mode === "on" }) }));
-      const policy = await hooks.get("before_agent_start")({}, ctx);
-      if (mode === "on") {
-        expect(policy.message.customType).toBe("kanban-policy");
-        expect(tools.get("Kanban").exposure).not.toBe("hidden");
+      expect(saved.extensionEnabled).toBe(mode === "on");
+      expect(saved.kanbanEnabled).toBe(kanbanEnabled);
+      expect(pi.events.emit).toHaveBeenLastCalledWith("subagents:settings_changed", expect.objectContaining({ persisted: true, settings: expect.objectContaining({ extensionEnabled: mode === "on", kanbanEnabled }) }));
+      if (mode === "off") {
+        expect(hooks.get("before_agent_start")({}, ctx)).toBeUndefined();
+        for (const tool of tools.values()) { expect(tool.exposure).toBe("hidden"); expect(tool.promptGuidelines).toEqual([]); }
+        await expect(staleAgent.execute("stale", { prompt: "Must not run" })).rejects.toThrow("pi-crew is off");
+        expect(await hooks.get("input")({ text: "@operate ignored" }, ctx)).toEqual({ action: "continue" });
+        expect((globalThis as any)[managerKey]).toBeUndefined();
       } else {
-        expect(policy.systemPrompt).toContain("<direct_agent_workflow>");
-        expect(tools.get("Kanban").exposure).toBe("hidden");
+        const policy = await hooks.get("before_agent_start")({}, ctx);
+        if (kanbanEnabled) expect(policy.message.customType).toBe("kanban-policy");
+        else expect(policy.systemPrompt).toContain("<direct_agent_workflow>");
+        expect(tools.get("Agent").exposure).not.toBe("hidden");
       }
     }
     expect(vi.mocked(startKanbanServer).mock.calls).toHaveLength(opened);
     expect(existsSync(join(root, "agent", "subagents.json"))).toBe(false);
-    expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Kanban off"), "info");
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith("pi-crew enabled.", "info");
   });
-  it("warns when a command toggle cannot be persisted while applying it for the session", async () => {
-    writeFileSync(join(ctx.cwd, ".pi"), "not a directory");
+  it("stops active runs on master-off without erasing records or replaying them", async () => {
+    const manager = (globalThis as any)[managerKey];
+    const spawned = await call("Agent", { prompt: "fixture work", description: "Master toggle fixture", subagent_type: "operate", run_in_background: true });
+    const id = /Agent ID: (\S+)/.exec(spawned.content[0].text)![1];
+    const record = manager.getRecord(id);
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    await command.handler("off", ctx);
+    expect(record.abortController.signal.aborted).toBe(true);
+    expect(manager.getRecord(id)).toBe(record);
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    for (const subcommand of ["", "demo", "tasks", "kban"]) await command.handler(subcommand, ctx);
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("pi-crew is off"), "info");
+    await command.handler("on", ctx);
+    expect(record.abortController.signal.aborted).toBe(true);
+    expect(manager.getRecord(id)).toBe(record);
+  });
+  it("cancels pending model mentions permanently across off/on instead of launching a direct fallback", async () => {
+    let finish!: (result: { spawned: boolean; error: string }) => void;
+    const pending = new Promise<{ spawned: boolean; error: string }>(resolve => { finish = resolve; });
+    vi.mocked(runMentionClone).mockReturnValueOnce(pending);
+    expect(await hooks.get("input")({ source: "interactive", text: "@operate do not replay this" }, ctx)).toEqual({ action: "handled" });
+    const signal = vi.mocked(runMentionClone).mock.calls.at(-1)![0].signal!;
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    await command.handler("off", ctx);
+    expect(signal.aborted).toBe(true);
+    await command.handler("on", ctx);
+    finish({ spawned: false, error: "cancelled" });
+    await pending; await Promise.resolve();
+    expect(pi.events.emit).not.toHaveBeenCalledWith("subagents:started", expect.anything());
+  });
+  it("silences stopped completions that settle after a quick off/on without losing evidence", async () => {
+    let finish!: (error: Error) => void;
+    vi.mocked(runAgent).mockImplementationOnce(async () => new Promise((_resolve, reject) => { finish = reject; }));
+    const manager = (globalThis as any)[managerKey];
+    const spawned = await call("Agent", { prompt: "fixture work", subagent_type: "operate", run_in_background: true });
+    const id = /Agent ID: (\S+)/.exec(spawned.content[0].text)![1];
+    const record = manager.getRecord(id);
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    await command.handler("off", ctx);
+    await command.handler("on", ctx);
+    finish(new Error("stopped fixture finally drained"));
+    await record.promise;
+    hooks.get("agent_settled")();
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+    expect(pi.events.emit).not.toHaveBeenCalledWith("subagents:failed", expect.objectContaining({ id }));
+    expect(pi.appendEntry).toHaveBeenCalledWith("subagents:record", expect.objectContaining({ id, status: "stopped" }));
+  });
+  it("recreates Kanban lazily rather than restoring its closed-controller tool", async () => {
+    state.toggle!(true);
+    hooks.get("before_agent_start")({}, ctx);
+    const oldTool = tools.get("Kanban");
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    await command.handler("off", ctx);
+    await command.handler("on", ctx);
+    expect(tools.get("Kanban").exposure).toBe("hidden");
+    hooks.get("before_agent_start")({}, ctx);
+    expect(tools.get("Kanban")).not.toBe(oldTool);
+    expect(tools.get("Kanban").exposure).not.toBe("hidden");
+    expect((await call("Kanban", { action: "list" })).details.tasks).toEqual([]);
+  });
+  it("loads persisted master-off without tools, policy, RPC, scheduler or mention activation and permits recovery", async () => {
+    await hooks.get("session_shutdown")();
+    tools.clear(); hooks.clear(); pi.registerCommand.mockClear(); pi.events.emit.mockClear();
+    state.bootSettings = { extensionEnabled: false, kanbanEnabled: true };
+    extension(pi);
+    await hooks.get("session_start")({}, ctx);
+    for (const tool of tools.values()) expect(tool.exposure).toBe("hidden");
+    expect(hooks.get("before_agent_start")({}, ctx)).toBeUndefined();
+    expect(pi.events.emit).not.toHaveBeenCalledWith("subagents:ready", expect.anything());
+    expect(pi.events.emit).not.toHaveBeenCalledWith("subagents:scheduler_ready", expect.anything());
+    expect(existsSync(join(root, "agent", "kanban"))).toBe(false);
+    mkdirSync(join(root, "agent", "agents"), { recursive: true });
+    writeFileSync(join(root, "agent", "agents", "recovery-fixture.md"), "---\ndescription: Recovery fixture agent\n---\nHelp with recovery.\n");
     const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
     await command.handler("on", ctx);
+    expect(tools.get("Agent").exposure).not.toBe("hidden");
+    expect(tools.get("Agent").description).toContain("recovery-fixture");
+    expect(tools.get("Agent").parameters.properties.subagent_type.description).toContain("recovery-fixture");
+    expect(tools.get("SubagentWorkflow").description).toContain("recovery-fixture");
+    expect(JSON.parse(readFileSync(join(ctx.cwd, ".pi", "subagents.json"), "utf8"))).toMatchObject({ extensionEnabled: true, kanbanEnabled: true });
+  });
+  it("warns when a master toggle cannot be persisted while applying it for the session", async () => {
+    writeFileSync(join(ctx.cwd, ".pi"), "not a directory");
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    await command.handler("off", ctx);
     expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("session only; failed to persist"), "warning");
-    const policy = await hooks.get("before_agent_start")({}, ctx);
-    expect(policy.message.customType).toBe("kanban-policy");
+    expect(hooks.get("before_agent_start")({}, ctx)).toBeUndefined();
   });
   it("removes only stale extension-owned Kanban context while off", () => {
     const ordinary = { role: "user", content: "User instructions" };

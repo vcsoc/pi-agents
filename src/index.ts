@@ -13,7 +13,7 @@
 import { spawn as spawnBrowser } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, getAgentDir, getSettingsListTheme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Container, isKeyRelease, Key, matchesKey, type ScrollViewScrollbar, type SettingItem, SettingsList, Spacer, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { abortable } from "./abortable.js";
@@ -321,6 +321,40 @@ export default function (pi: ExtensionAPI) {
   // injected as scoped custom tools by the existing manager instead.
   if (inChildSessionContext()) return;
 
+  const bootSettings = loadSettings(process.cwd());
+  let extensionEnabled = bootSettings.extensionEnabled !== false;
+  let extensionStopping: Promise<void> | undefined;
+  const crewTools = new Map<string, ToolDefinition<any, any>>();
+  const suppressedCompletions = new WeakSet<object>();
+  const mentionClones = new Set<AbortController>();
+  function cancelMentionClones() {
+    for (const controller of mentionClones) controller.abort();
+    mentionClones.clear();
+  }
+  function assertCrewEnabled() {
+    if (!extensionEnabled) throw new Error("pi-crew is off. Run /crew on to enable the extension.");
+  }
+  function registerCrewTool<T extends ToolDefinition<any, any>>(definition: T): T {
+    const guarded: ToolDefinition<any, any> = {
+      ...definition,
+      execute: async (...args) => { assertCrewEnabled(); return definition.execute(...args); },
+    };
+    crewTools.set(guarded.name, guarded);
+    pi.registerTool(extensionEnabled ? guarded : { ...guarded, exposure: "hidden", promptSnippet: undefined, promptGuidelines: [] });
+    return guarded as T;
+  }
+  function refreshCrewTools() {
+    for (const tool of crewTools.values()) {
+      if (extensionEnabled && tool.name === SUBAGENT_TOOL_NAMES.AGENT) {
+        tool.description = agentToolDescription();
+        tool.parameters.properties.subagent_type.description = subagentTypeDescription();
+      }
+      if (extensionEnabled && tool.name === SUBAGENT_TOOL_NAMES.WORKFLOW) tool.description = renderToolDescriptionTemplate(fullWorkflowToolDescription);
+      const visible = extensionEnabled && (tool.name !== "Kanban" || kanbanEnabled) && (tool.name !== SUBAGENT_TOOL_NAMES.WORKFLOW || isWorkflowsEnabled());
+      pi.registerTool(visible ? tool : { ...tool, exposure: "hidden", promptSnippet: undefined, promptGuidelines: [] });
+    }
+  }
+
   // ---- Register custom notification renderer ----
   pi.registerMessageRenderer<NotificationDetails>(
     "subagent-notification",
@@ -407,7 +441,6 @@ export default function (pi: ExtensionAPI) {
 
   // Read directly rather than waiting for applyAndEmitLoaded below: these decide
   // the initial load, which happens hundreds of lines before settings are applied.
-  const bootSettings = loadSettings(process.cwd());
   let strictAgentFiles = bootSettings.strictAgentFiles === true;
   let kanbanEnabled = false;
   let kanban: KanbanController | undefined;
@@ -432,7 +465,7 @@ export default function (pi: ExtensionAPI) {
 
   // Initial load — the only strict one. A bad edit mid-session must not kill the
   // session on the next unrelated spawn, so every later reload keeps warning.
-  reloadCustomAgents(strictAgentFiles);
+  if (extensionEnabled) reloadCustomAgents(strictAgentFiles);
 
   // ---- Agent activity tracking + widget ----
   const agentActivity = new Map<string, AgentActivity>();
@@ -482,12 +515,12 @@ export default function (pi: ExtensionAPI) {
   // completion-outbox.ts). Each is built when the agent finishes, and reading
   // the result (get_subagent_result, rpc consume) cancels it before it is sent.
   const outbox = new CompletionOutbox(
-    (message) => pi.sendMessage<NotificationDetails>({
+    (message) => { if (extensionEnabled) pi.sendMessage<NotificationDetails>({
       customType: "subagent-notification",
       content: message.content,
       display: true,
       details: message.details,
-    }, { deliverAs: "followUp", triggerTurn: true }),
+    }, { deliverAs: "followUp", triggerTurn: true }); },
     () => currentCtx?.signal !== undefined,
   );
   // A queued result wait must observe completion before its held notification
@@ -592,15 +625,6 @@ export default function (pi: ExtensionAPI) {
     // notification, and UI channels.
     if (!isTopLevelAgent(record)) return;
 
-    // Emit lifecycle event based on terminal status
-    const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted";
-    const eventData = buildEventData(record);
-    if (isError) {
-      pi.events.emit("subagents:failed", eventData);
-    } else {
-      pi.events.emit("subagents:completed", eventData);
-    }
-
     // Persist final record for cross-extension history reconstruction
     pi.appendEntry("subagents:record", {
       id: record.id, type: record.type, description: record.description,
@@ -608,6 +632,10 @@ export default function (pi: ExtensionAPI) {
       startedAt: record.startedAt, completedAt: record.completedAt,
     });
 
+    // Disabled extensions retain final records but never nudge the model or repaint UI.
+    if (!extensionEnabled || suppressedCompletions.has(record)) return;
+    const isError = record.status === "error" || record.status === "stopped" || record.status === "aborted";
+    pi.events.emit(isError ? "subagents:failed" : "subagents:completed", buildEventData(record));
     // Skip notification if result was already consumed via get_subagent_result
     if (record.resultConsumed) {
       agentActivity.delete(record.id);
@@ -632,7 +660,8 @@ export default function (pi: ExtensionAPI) {
     // 'delivered' → group callback already fired
     widget.update();
   }, undefined, (record) => {
-    if (!isTopLevelAgent(record)) return;
+    if (!extensionEnabled || !isTopLevelAgent(record)) return;
+    suppressedCompletions.delete(record);
     // Agent-tool spawns refresh these surfaces in their tool handler, but RPC
     // and scheduler spawns enter through the manager directly.
     if (currentCtx?.hasUI) {
@@ -720,6 +749,7 @@ export default function (pi: ExtensionAPI) {
    * either be in-process or have gone through `spawnTopLevel` first.
    */
   const spawnResolved = (piRef: any, ctxRef: any, type: string, prompt: string, options: any) => {
+    assertCrewEnabled();
     // Cross-extension callers get the same dispatch contract as the LLM (#183).
     // The RPC layer already throws for an unresolvable model rather than falling
     // back silently; a bad agent type should not be quieter. Throws become error
@@ -801,7 +831,7 @@ export default function (pi: ExtensionAPI) {
     },
   };
   const ownsManagerRegistry = (globalThis as any)[MANAGER_KEY] === undefined;
-  if (ownsManagerRegistry) {
+  if (ownsManagerRegistry && extensionEnabled) {
     (globalThis as any)[MANAGER_KEY] = registryEntry;
   }
 
@@ -815,6 +845,10 @@ export default function (pi: ExtensionAPI) {
   // (currentCtx would stay undefined → spawn always "No active session"). Gating
   // here makes a filtered session behave like an absent one (#142).
   let rpcHandle: RpcHandle | undefined;
+  function disconnectRpc() {
+    rpcHandle?.unsubSpawn(); rpcHandle?.unsubStop(); rpcHandle?.unsubPing(); rpcHandle?.unsubConsume(); rpcHandle?.unsubSteer();
+    rpcHandle = undefined;
+  }
   /** Whether the `@handle` autocomplete wrapper has been stacked on pi's provider. */
   let mentionProviderRegistered = false;
 
@@ -825,6 +859,7 @@ export default function (pi: ExtensionAPI) {
   const scheduler = new SubagentScheduler();
 
   function startScheduler(ctx: ExtensionContext) {
+    if (!extensionEnabled) return;
     try {
       const sessionId = ctx.sessionManager?.getSessionId?.();
       if (!sessionId) return;  // sessionId not yet available — try again on next event
@@ -842,8 +877,11 @@ export default function (pi: ExtensionAPI) {
   // Capture ctx from session_start for RPC spawn handler + start the scheduler.
   // This also wires the RPC handlers and broadcasts readiness — on the first
   // bound session_start, so a filtered-out activation never advertises (#142).
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", (_event, ctx) => initializeCrew(ctx));
+
+  async function initializeCrew(ctx: ExtensionContext, initialSession = true) {
     currentCtx = ctx;
+    if (!extensionEnabled) return;
     // Pi resolves project trust before the first session starts, so this is the
     // earliest honest answer. The activation-time load defaulted to untrusted,
     // so a trusted project's `packages[]` only becomes visible now.
@@ -853,12 +891,13 @@ export default function (pi: ExtensionAPI) {
     // that added a package the cached root list predates.
     invalidatePackageCache();
     reloadCustomAgents();
+    if (!initialSession) refreshCrewTools();
     if (ctx.hasUI) {
       widget.setUICtx(ctx.ui);
       fleet.setUICtx(ctx.ui as any);
       watchHandoffKey(ctx.ui);
     }
-    manager.clearCompleted(true);
+    if (initialSession) manager.clearCompleted(true);
     // Guard mirrors the `!scheduler.isActive()` pattern below: session_start
     // fires once per activation, but a double-bind must not leak listeners.
     if (!rpcHandle) {
@@ -914,8 +953,8 @@ export default function (pi: ExtensionAPI) {
     // extension factory has run, so this is the earliest point the real value
     // exists. Detached inside — a workflow must not hold up session startup.
     resolveWorkflowCollisions(ctx);
-    runWorkflowFlag(ctx);
-  });
+    if (initialSession) runWorkflowFlag(ctx);
+  }
 
   /** Agent types `@` can start, in the shape the roster wants. */
   const mentionTypes = (): TypeInfo[] =>
@@ -934,6 +973,7 @@ export default function (pi: ExtensionAPI) {
    * notification either way.
    */
   pi.on("input", async (event, ctx) => {
+    if (!extensionEnabled) return { action: "continue" };
     // Never hijack text the extension layer itself submitted (pi.sendMessage,
     // scheduled prompts) — only something a person typed can be a mention.
     if (event.source === "extension" || !isAgentMentionsEnabled()) return { action: "continue" };
@@ -1106,9 +1146,11 @@ export default function (pi: ExtensionAPI) {
       // Not awaited: the clone runs a full model turn, and prompt() is blocked
       // until this hook returns. The user gets their prompt back immediately
       // and the agent appears in the widget when it starts.
-      void runMentionClone({ ctx, type, message: mention.message, agentTool: registeredAgentTool })
+      const controller = new AbortController();
+      mentionClones.add(controller);
+      void runMentionClone({ ctx, type, message: mention.message, agentTool: registeredAgentTool, signal: controller.signal })
         .then(async (result) => {
-          if (result.spawned) return;
+          if (controller.signal.aborted || !extensionEnabled || result.spawned) return;
           // A clone that could not run must not swallow the mention: start the
           // agent the direct way rather than leaving the user with a toast and
           // nothing running.
@@ -1120,14 +1162,15 @@ export default function (pi: ExtensionAPI) {
             // Same reason as the direct path below: the agent may still be
             // starting, and a failure there must reach this catch.
             await manager.awaitStartup(id);
-            ctx.ui.notify(`Started ${label} directly — ${result.error}`, "warning");
+            if (!controller.signal.aborted && extensionEnabled) ctx.ui.notify(`Started ${label} directly — ${result.error}`, "warning");
           } catch (err) {
+            if (controller.signal.aborted || !extensionEnabled) return;
             ctx.ui.notify(
               `Could not start ${label}: ${err instanceof Error ? err.message : String(err)}`,
               "error",
             );
           }
-        });
+        }).finally(() => mentionClones.delete(controller));
       return { action: "handled" };
     }
 
@@ -1153,6 +1196,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_before_switch", () => {
+    cancelMentionClones();
+    if (!extensionEnabled) return;
     manager.clearCompleted(true);
     scheduler.stop();
   });
@@ -1160,13 +1205,9 @@ export default function (pi: ExtensionAPI) {
   // On shutdown, abort all agents immediately and clean up.
   // If the session is going down, there's nothing left to consume agent results.
   pi.on("session_shutdown", async () => {
+    cancelMentionClones();
     await stopKanban();
-    rpcHandle?.unsubSpawn();
-    rpcHandle?.unsubStop();
-    rpcHandle?.unsubPing();
-    rpcHandle?.unsubConsume();
-    rpcHandle?.unsubSteer();
-    rpcHandle = undefined;
+    disconnectRpc();
     currentCtx = undefined;
     // Only release the global slot if this activation claimed it — a child
     // session's shutdown must not delete the root session's registry entry.
@@ -1213,7 +1254,7 @@ export default function (pi: ExtensionAPI) {
   // everything else; "off" = hide the widget entirely. Read live at render time.
   let widgetMode: WidgetMode = "background";
   function getWidgetMode(): WidgetMode { return widgetMode; }
-  const widget = new AgentWidget(manager, agentActivity, getWidgetMode, isShowCostEnabled, isShowModelEnabled);
+  const widget = new AgentWidget(manager, agentActivity, () => extensionEnabled ? getWidgetMode() : "off", isShowCostEnabled, isShowModelEnabled);
   function setWidgetMode(m: WidgetMode): void { widgetMode = m; widget.update(); }
 
   /**
@@ -1307,7 +1348,7 @@ export default function (pi: ExtensionAPI) {
     getFullscreenScrollbar, backgroundActionFor);
   let fleetViewEnabled = true;
   function isFleetViewEnabled(): boolean { return fleetViewEnabled; }
-  function setFleetViewEnabled(b: boolean): void { fleetViewEnabled = b; fleet.setEnabled(b); }
+  function setFleetViewEnabled(b: boolean): void { fleetViewEnabled = b; fleet.setEnabled(extensionEnabled && b); }
 
   // Claude Code-style `@handle message` prompt mentions. Read live by both the
   // `input` hook and the stacked autocomplete provider, so the toggle applies
@@ -1319,7 +1360,7 @@ export default function (pi: ExtensionAPI) {
   // `model` and `direct` differ only in who starts a not-yet-running agent, so
   // everything that just asks "are mentions live at all" — the suggestion list,
   // the steer and resume branches — reads this instead of the mode.
-  function isAgentMentionsEnabled(): boolean { return agentMentionMode !== "off"; }
+  function isAgentMentionsEnabled(): boolean { return extensionEnabled && agentMentionMode !== "off"; }
 
   // Project/global default for writing the subagent .output transcript lives in
   // output-file.ts (both spawn paths read it). A custom agent's
@@ -1455,6 +1496,7 @@ export default function (pi: ExtensionAPI) {
     prompt: string,
     opts: { outputTranscript: boolean; maxTurns?: number; toolCallId?: string },
   ): Promise<AgentRecord | undefined> {
+    assertCrewEnabled();
     const id = existing.id;
     const joinMode = resolveJoinMode(defaultJoinMode, true);
     // Assigned unconditionally: the completion notification carries this as
@@ -1533,6 +1575,7 @@ export default function (pi: ExtensionAPI) {
 
   // Grab UI context from first tool execution + clear lingering widget on new turn
   pi.on("tool_execution_start", async (_event, ctx) => {
+    if (!extensionEnabled) return;
     widget.setUICtx(ctx.ui as UICtx);
     fleet.setUICtx(ctx.ui as unknown as FleetUICtx);
     watchHandoffKey(ctx.ui);
@@ -1542,11 +1585,12 @@ export default function (pi: ExtensionAPI) {
   // The parent's tool batch is done and its next model call not yet made: the
   // boundary where completions are delivered, as in Claude Code.
   pi.on("turn_end", (event) => {
+    if (!extensionEnabled) return;
     registerTurnGroup();
     outbox.onTurnEnd(event.message.role === "assistant" ? event.message.stopReason : undefined);
   });
-  pi.on("agent_end", () => outbox.onAgentEnd());
-  pi.on("agent_settled", () => outbox.onAgentEnd());
+  pi.on("agent_end", () => { if (extensionEnabled) outbox.onAgentEnd(); });
+  pi.on("agent_settled", () => { if (extensionEnabled) outbox.onAgentEnd(); });
 
   /** Build the full type list text dynamically from available agents only. */
   const buildTypeListText = () => {
@@ -1589,12 +1633,45 @@ export default function (pi: ExtensionAPI) {
     for (const result of results) if (result.status === "rejected") currentCtx?.ui.notify(`Kanban cleanup: ${String(result.reason)}`, "warning");
   }
 
+  async function setExtensionEnabled(enabled: boolean, ctx: ExtensionCommandContext) {
+    if (extensionStopping) await extensionStopping;
+    if (enabled === extensionEnabled) return;
+    extensionEnabled = enabled;
+    if (enabled) {
+      if (ownsManagerRegistry && (globalThis as any)[MANAGER_KEY] === undefined) (globalThis as any)[MANAGER_KEY] = registryEntry;
+      fleet.setEnabled(fleetViewEnabled);
+      await initializeCrew(ctx, false);
+      return;
+    }
+    refreshCrewTools();
+    cancelMentionClones();
+    scheduler.stop();
+    disconnectRpc();
+    if (ownsManagerRegistry && (globalThis as any)[MANAGER_KEY] === registryEntry) delete (globalThis as any)[MANAGER_KEY];
+    // A stopped run may settle after a quick off/on; do not replay its completion.
+    for (const task of workflowTasks.values()) { suppressedCompletions.add(task); task.abortController.abort(); }
+    for (const record of manager.listAgents()) {
+      if (record.status === "running" || record.status === "queued") suppressedCompletions.add(record);
+    }
+    manager.abortAll();
+    groupJoin.dispose();
+    turnGroupSpawns.length = 0;
+    outbox.dispose();
+    widget.dispose();
+    fleet.setEnabled(false);
+    fleet.dispose();
+    unsubHandoffKey?.(); unsubHandoffKey = undefined; handoffKeyUi = undefined;
+    crewTools.delete("Kanban"); // Recreate closed controller tools lazily, never restore a stale controller.
+    extensionStopping = stopKanban().catch(error => ctx.ui.notify(`pi-crew is off; cleanup needs attention: ${String(error)}`, "warning"));
+    try { await extensionStopping; } finally { extensionStopping = undefined; }
+  }
+
   function setKanbanEnabled(enabled: boolean) {
     if (enabled === kanbanEnabled) return;
     kanbanEnabled = enabled;
     kanbanWebGeneration++;
     if (kanban) {
-      pi.registerTool({ ...kanban.orchestratorTool(), exposure: enabled ? "direct" : "hidden", promptGuidelines: enabled ? [KANBAN_GUIDELINES] : [] });
+      registerCrewTool({ ...kanban.orchestratorTool(), exposure: enabled ? "direct" : "hidden", promptGuidelines: enabled ? [KANBAN_GUIDELINES] : [] });
     }
     if (!enabled) {
       // Existing workers drain safely; disabled mode never claims new task work.
@@ -1606,12 +1683,13 @@ export default function (pi: ExtensionAPI) {
   }
 
   function ensureKanban(ctx: ExtensionContext): KanbanController {
+    assertCrewEnabled();
     if (!kanbanEnabled) throw new Error("Kanban is off. Manage agents directly in /crew.");
     if (!ctx.isProjectTrusted()) throw new Error("Kanban workers require a trusted project.");
     if (!kanban) {
       const store = new KanbanStore(ctx.cwd, join(getAgentDir(), "kanban"));
       kanban = new KanbanController(store, {
-        enabled: () => kanbanEnabled,
+        enabled: () => extensionEnabled && kanbanEnabled,
         spawn: (type, prompt, binding, cwd, signal) => spawnTopLevel(pi, ctx, type, prompt, {
           description: "Kanban: " + type,
           kanban: binding, cwd, configCwd: ctx.cwd, isBackground: true, signal, maxTurns: 40,
@@ -1630,23 +1708,26 @@ export default function (pi: ExtensionAPI) {
         stop: id => { const workflow = workflowTasks.get(id); if (workflow) workflow.abortController.abort(); else manager.abort(id); },
         steer: (id, message) => { manager.steer(id, message); },
         validAgent: type => { const resolution = resolveSpawnType(type); return resolution.ok && !resolution.fellBackFrom && !!getAgentConfig(resolution.type); },
-        notify: message => { if (kanbanEnabled) pi.sendMessage({ customType: "kanban-update", content: message, display: true }, { triggerTurn: false, deliverAs: "followUp" }); },
+        notify: message => { if (extensionEnabled && kanbanEnabled) pi.sendMessage({ customType: "kanban-update", content: message, display: true }, { triggerTurn: false, deliverAs: "followUp" }); },
       });
-      pi.registerTool(kanban.orchestratorTool());
+      registerCrewTool(kanban.orchestratorTool());
       kanban.start();
     }
     return kanban;
   }
 
   manager.setSpawnGuard(binding => {
+    assertCrewEnabled();
     binding?.assertAllowed("KanbanTask");
   });
 
   pi.on("context", event => {
+    if (!extensionEnabled) return { messages: event.messages.filter(message => message.role !== "custom" || !["kanban-policy", "kanban-update", "subagent-notification", "agents-demo"].includes(message.customType)) };
     if (!kanbanEnabled) return { messages: event.messages.filter(message => message.role !== "custom" || !["kanban-policy", "kanban-update"].includes(message.customType)) };
   });
 
   pi.on("before_agent_start", (event, ctx) => {
+    if (!extensionEnabled) return;
     if (!kanbanEnabled) {
       return { systemPrompt: `${event.systemPrompt ?? ctx.getSystemPrompt()}\n\n<direct_agent_workflow>\nManage work directly using the native Agent, result and steering tools and the /crew agents harness. Kanban is off: ignore previous Kanban workflow instructions; do not use its tools, create board tasks, assign rubrics or run managed acceptance handoffs.\nComplete small work directly; delegate only when useful and approved. Keep one implementation owner, avoid duplicate work, unnecessary handoffs and polling, and finish efficiently without skipping safety checks or tests.\nReport agent progress, blockers, validation and final results in concise, human-readable language through the native harness. Preserve existing workers and evidence; do not restart suspended work automatically.\n</direct_agent_workflow>` };
     }
@@ -1660,6 +1741,7 @@ export default function (pi: ExtensionAPI) {
   // to stderr and falls back to defaults.
   applyAndEmitLoaded(
     {
+      setExtensionEnabled: (enabled) => { extensionEnabled = enabled; },
       setMaxConcurrent: (n) => manager.setMaxConcurrent(n),
       setMaxConcurrentForeground: (n) => manager.setMaxConcurrentForeground(n),
       setDefaultMaxTurns,
@@ -1735,7 +1817,7 @@ export default function (pi: ExtensionAPI) {
   // the same load-bearing facts as the full version at ~75% fewer tokens, for
   // small/local models. Per-option details live in the param descriptions.
   const compactAgentToolDescription = `Launch an autonomous agent for complex, multi-step tasks. Agent types:
-${buildCompactTypeListText()}
+{{compactTypeList}}
 
 Custom agents: .pi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global).
 
@@ -1749,7 +1831,7 @@ Notes:
   const fullAgentToolDescription = `Launch a new agent to handle complex, multi-step tasks autonomously. Each agent type has specific capabilities and tools available to it.
 
 Available agent types and the tools they have access to:
-${buildTypeListText()}
+{{typeList}}
 
 Custom agents can be defined in .pi/agents/<name>.md (project) or ${getAgentDir()}/agents/<name>.md (global) — they are picked up automatically. Project-level agents override global ones. Creating a .md file with the same name as a default agent overrides it.
 
@@ -1826,16 +1908,17 @@ Terse command-style prompts produce shallow, generic work.
     return undefined;
   };
 
-  const agentToolDescription = (() => {
+  const agentToolDescription = () => {
     const mode = getToolDescriptionMode();
-    if (mode === "compact") return compactAgentToolDescription;
+    if (mode === "compact") return renderToolDescriptionTemplate(compactAgentToolDescription);
     if (mode === "custom") {
       const custom = loadCustomToolDescription();
       if (custom) return custom;
       console.warn('[pi-agents] toolDescriptionMode is "custom" but no agent-tool-description.md found — using "full"');
     }
-    return fullAgentToolDescription;
-  })();
+    return renderToolDescriptionTemplate(fullAgentToolDescription);
+  };
+  const subagentTypeDescription = () => `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}. Custom agents from .pi/agents/*.md (project) or ${getAgentDir()}/agents/*.md (global) are also available.`;
 
   // Held rather than registered inline: the mention clone reuses this exact
   // definition, so the agent it starts is an ordinary top-level spawn instead
@@ -1843,7 +1926,7 @@ Terse command-style prompts produce shallow, generic work.
   const agentTool = defineTool({
     name: SUBAGENT_TOOL_NAMES.AGENT,
     label: "Agent",
-    description: agentToolDescription,
+    description: extensionEnabled ? agentToolDescription() : "",
     promptSnippet: "Launch autonomous sub-agents for complex multi-step tasks",
     promptGuidelines: [
       "Use Agent with specialized agents when the task matches an agent type's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing — if you delegate research to a subagent, do not also perform the same searches yourself.",
@@ -1865,7 +1948,7 @@ Terse command-style prompts produce shallow, generic work.
         }),
       ),
       subagent_type: Type.String({
-        description: `The type of specialized agent to use. Available types: ${getAvailableTypes().join(", ")}. Custom agents from .pi/agents/*.md (project) or ${getAgentDir()}/agents/*.md (global) are also available.`,
+        description: subagentTypeDescription(),
       }),
       ...modelParam(),
       thinking: Type.Optional(
@@ -2617,13 +2700,12 @@ Terse command-style prompts produce shallow, generic work.
     };
   }
   function registerToolReportingUsage(tool: any): void {
-    pi.registerTool(withUsageReporting(tool));
+    registerCrewTool(withUsageReporting(tool));
   }
 
   // The mention path is handed THIS object, not the bare `agentTool` — see the
   // mention-clone header on why the clone must call the registered tool.
-  const registeredAgentTool = withUsageReporting(agentTool);
-  pi.registerTool(registeredAgentTool);
+  const registeredAgentTool = registerCrewTool(withUsageReporting(agentTool));
 
   // ---- Workflow tool ----
 
@@ -2667,6 +2749,7 @@ Terse command-style prompts produce shallow, generic work.
    */
   async function runWorkflowTask(ctx: ExtensionContext, task: WorkflowTask): Promise<void> {
     try {
+      assertCrewEnabled();
       const result = await runWorkflow({
         script: task.script,
         args: task.args,
@@ -2702,6 +2785,7 @@ Terse command-style prompts produce shallow, generic work.
    * boundary — rendered by the existing `subagent-notification` renderer.
    */
   function notifyWorkflowFinished(task: WorkflowTask) {
+    if (!extensionEnabled || suppressedCompletions.has(task)) return;
     widget.update();
     fleet.update();
     const result = workflowResultText(task);
@@ -2900,7 +2984,7 @@ Terse command-style prompts produce shallow, generic work.
     },
   });
 
-  if (isWorkflowsEnabled()) pi.registerTool(workflowTool);
+  if (isWorkflowsEnabled()) registerCrewTool(workflowTool);
 
   /**
    * Act on {@link decideWorkflowCollision} — the half that needs the host.
@@ -3783,6 +3867,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
    */
   function snapshotSettings() {
     return {
+      extensionEnabled,
       maxConcurrent: manager.getMaxConcurrent(),
       // 0 = unlimited, and the default — see SubagentsSettings.
       maxConcurrentForeground: manager.getMaxConcurrentForeground(),
@@ -4401,20 +4486,21 @@ Write the file using the write tool. Only write the file, nothing else.`;
 
   let demoRunning = false;
   pi.registerCommand("crew", {
-    description: "Manage agents; /crew on or /crew off toggles Kanban; /crew version shows the loaded version; /crew demo runs a bounded four-agent demonstration",
+    description: "Manage Crew; /crew on or /crew off enables or disables the entire extension; /crew version shows the loaded version; /crew demo runs a bounded four-agent demonstration",
     handler: async (args, ctx) => {
       const mode = args.trim();
       if (mode === "on" || mode === "off") {
-        setKanbanEnabled(mode === "on");
-        notifyApplied(ctx, kanbanEnabled
-          ? "Kanban enabled. Open /crew kban."
-          : "Kanban off; manage agents directly in /crew. Existing workers are preserved.");
+        await setExtensionEnabled(mode === "on", ctx);
+        notifyApplied(ctx, extensionEnabled
+          ? "pi-crew enabled."
+          : "pi-crew disabled. Tools, agent routing, scheduling and UI are off. Run /crew on to enable.");
         return;
       }
       if (args.trim() === "version") {
         ctx.ui.notify(`pi-crew v${EXTENSION_VERSION} (loaded)`, "info");
         return;
       }
+      if (!extensionEnabled) { ctx.ui.notify("pi-crew is off. Run /crew on to enable the extension.", "info"); return; }
       if (args.trim() === "demo") {
         if (demoRunning) { ctx.ui.notify("An agents demo is already running.", "warning"); return; }
         demoRunning = true;
@@ -4427,7 +4513,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
             demoWeb = undefined;
             await previous?.close();
             const opened = await startKanbanServer(demoBoard);
-            if (!kanbanEnabled || generation !== kanbanWebGeneration) await opened.close();
+            if (!extensionEnabled || !kanbanEnabled || generation !== kanbanWebGeneration) await opened.close();
             else {
               demoWeb = opened;
               const launcher = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open";
@@ -4440,6 +4526,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
           const result = await runAgentsDemo({
             signal: ctx.signal,
             report: message => {
+              if (!extensionEnabled) return;
               if (message.endsWith(": running")) demoBoard?.update(message.slice(0, -9), "running");
               ctx.ui.notify(message, "info");
             },
@@ -4457,8 +4544,10 @@ Write the file using the write tool. Only write the file, nothing else.`;
           }, Math.max(1, 30_000 - (performance.now() - started)));
           const message = `${result.message} Elapsed ${(result.elapsedMs / 1000).toFixed(1)}s.`;
           demoBoard?.finish(result.passed, message);
-          pi.sendMessage({ customType: "agents-demo", content: message, display: true }, { triggerTurn: false });
-          ctx.ui.notify(message, result.passed ? "info" : "warning");
+          if (extensionEnabled) {
+            pi.sendMessage({ customType: "agents-demo", content: message, display: true }, { triggerTurn: false });
+            ctx.ui.notify(message, result.passed ? "info" : "warning");
+          }
         } catch (error) { demoBoard?.finish(false, String(error)); ctx.ui.notify(`Demo failed: ${String(error)}`, "error"); }
         finally { demoRunning = false; }
         return;
@@ -4487,11 +4576,11 @@ Write the file using the write tool. Only write the file, nothing else.`;
         if (!kanbanWeb) {
           const generation = kanbanWebGeneration;
           const opened = await startKanbanServer(controller);
-          if (!kanbanEnabled || generation !== kanbanWebGeneration) { await opened.close(); return; }
+          if (!extensionEnabled || !kanbanEnabled || generation !== kanbanWebGeneration) { await opened.close(); return; }
           if (kanbanWeb) await opened.close();
           else kanbanWeb = opened;
         }
-        if (!kanbanEnabled || !kanbanWeb) return;
+        if (!extensionEnabled || !kanbanEnabled || !kanbanWeb) return;
         ctx.ui.notify(`Kanban: ${kanbanWeb.url}`, "info");
         const launcher = process.platform === "darwin" ? "open" : process.platform === "win32" ? "explorer.exe" : "xdg-open";
         const browser = spawnBrowser(launcher, [kanbanWeb.url], { detached: true, stdio: "ignore" });

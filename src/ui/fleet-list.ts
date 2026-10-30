@@ -174,6 +174,7 @@ export class FleetList {
 
   /** Ensure the re-render timer is running (called when an agent spawns). */
   ensureTimer(): void {
+    if (!this.enabled || !this.ui) return;
     if (!this.timer) this.timer = setInterval(() => this.update(), TICK_MS);
   }
 

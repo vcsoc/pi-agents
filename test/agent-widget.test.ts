@@ -107,6 +107,13 @@ describe("AgentWidget", () => {
       .join("\n");
   }
 
+  it("brands the visible harness heading as Crew", () => {
+    const manager = { listAgents: () => [makeRecord("worker", { isBackground: true })] };
+    const heading = renderLines(manager, "worker").split("\n")[0];
+    expect(heading).toContain("Crew");
+    expect(heading).not.toContain("Agents");
+  });
+
   // "all" (and the no-policy constructor default) shows every agent.
   it("shows foreground agents in 'all' mode (and by default)", () => {
     const manager = { listAgents: () => [makeRecord("foreground", { isBackground: false })] };
@@ -143,7 +150,7 @@ describe("AgentWidget", () => {
   it("renders background agents in 'background' mode", () => {
     const manager = { listAgents: () => [makeRecord("background", { isBackground: true })] };
     const lines = renderLines(manager, "background", () => "background");
-    expect(lines).toContain("Agents");
+    expect(lines).toContain("Crew");
     expect(lines).toContain("background description");
   });
 

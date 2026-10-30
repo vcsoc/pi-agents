@@ -95,6 +95,24 @@ describe("settings persistence", () => {
     expect(loadSettings(projectDir)).toEqual(settings);
   });
 
+  it("persists the independent extension master switch and ignores non-booleans", () => {
+    for (const extensionEnabled of [true, false]) {
+      saveSettings({ extensionEnabled, kanbanEnabled: true }, projectDir);
+      expect(loadSettings(projectDir)).toEqual({ extensionEnabled, kanbanEnabled: true });
+    }
+    writeProject({ extensionEnabled: "false", kanbanEnabled: false });
+    expect(loadSettings(projectDir)).toEqual({ kanbanEnabled: false });
+    writeGlobal({ extensionEnabled: false });
+    writeProject({ extensionEnabled: true });
+    expect(loadSettings(projectDir).extensionEnabled).toBe(true);
+    const setExtensionEnabled = vi.fn();
+    const appliers = { setExtensionEnabled } as unknown as SettingsAppliers;
+    applySettings({ extensionEnabled: false }, appliers);
+    applySettings({ extensionEnabled: true }, appliers);
+    applySettings({}, appliers);
+    expect(setExtensionEnabled.mock.calls).toEqual([[false], [true]]);
+  });
+
   it("round-trips schedulingEnabled (true and false), and absence stays absent", () => {
     saveSettings({ schedulingEnabled: false }, projectDir);
     expect(loadSettings(projectDir)).toEqual({ schedulingEnabled: false });

@@ -21,8 +21,9 @@ const controller = {
 const sandbox = {
   pi: { registerCommand: (name, command) => commands.set(name, command) },
   EXTENSION_VERSION: 'test-version',
+  extensionEnabled: true,
   kanbanEnabled: false,
-  setKanbanEnabled: enabled => { sandbox.kanbanEnabled = enabled; toggles.push(enabled); },
+  setExtensionEnabled: async enabled => { sandbox.extensionEnabled = enabled; toggles.push(enabled); },
   notifyApplied: (ctx, message) => ctx.ui.notify(message, 'info'),
   showAgentsMenu: async () => { menus++; },
   ensureKanban: () => controller,
@@ -37,13 +38,19 @@ assert.deepEqual(notices.pop(), ['pi-crew vtest-version (loaded)', 'info']);
 await command.handler('', ctx);
 assert.equal(menus, 1);
 await command.handler('  on  ', ctx);
-assert.equal(sandbox.kanbanEnabled, true);
-assert.match(notices.pop()[0], /Kanban enabled/);
+assert.equal(sandbox.extensionEnabled, true);
+assert.equal(sandbox.kanbanEnabled, false);
+assert.match(notices.pop()[0], /pi-crew enabled/);
 await command.handler('off', ctx);
+assert.equal(sandbox.extensionEnabled, false);
 assert.equal(sandbox.kanbanEnabled, false);
 assert.deepEqual(toggles, [true, false]);
-assert.match(notices.pop()[0], /Kanban off/);
+assert.match(notices.pop()[0], /pi-crew disabled/);
+await command.handler('', ctx);
+assert.match(notices.pop()[0], /pi-crew is off/);
 assert.equal(menus, 1);
+await command.handler('on', ctx);
+notices.pop();
 await command.handler('tasks', ctx);
 assert.match(notices.pop()[0], /Kanban is off/);
 await command.handler('kban', ctx);
@@ -53,4 +60,4 @@ await command.handler('tasks', ctx);
 assert.match(notices.pop()[0], /Kanban tasks/);
 await command.handler('tasks invalid', ctx);
 assert.match(notices.pop()[0], /Use \/crew tasks/);
-console.log('PASS: /crew registration, no legacy command, help, loaded version, on/off toggles, menu, tasks, task usage, and disabled Kanban guidance');
+console.log('PASS: /crew registration, no legacy command, help, loaded version, extension-wide on/off toggles independent of Kanban, menu, tasks, task usage, and disabled Kanban guidance');

@@ -341,6 +341,7 @@ export class AgentWidget {
 
   /** Ensure the widget update timer is running. */
   ensureTimer() {
+    if (!this.uiCtx || this.mode() === "off") return;
     if (!this.widgetInterval) {
       this.widgetInterval = setInterval(() => this.update(), 80);
     }
@@ -495,7 +496,7 @@ export class AgentWidget {
     const maxBody = MAX_WIDGET_LINES - 1; // heading takes 1 line
     const totalBody = finishedLines.length + runningLines.length * 2 + (queuedLine ? 1 : 0);
 
-    const lines: string[] = [truncate(theme.fg(headingColor, headingIcon) + " " + theme.fg(headingColor, "Agents"))];
+    const lines: string[] = [truncate(theme.fg(headingColor, headingIcon) + " " + theme.fg(headingColor, "Crew"))];
 
     if (totalBody <= maxBody) {
       // Everything fits — add all lines and fix up connectors for the last item.

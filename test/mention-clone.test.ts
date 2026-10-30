@@ -105,6 +105,7 @@ function visibleTools(opts: any): any[] {
 function cloneSession(turn?: (tool: any) => Promise<void> | void) {
   const session = {
     prompt: vi.fn(async () => {}),
+    abort: vi.fn(async () => {}),
     dispose: vi.fn(),
   } as any;
   createAgentSession.mockImplementation(async (opts: any) => {
@@ -133,6 +134,35 @@ const opts = (over: Record<string, unknown> = {}) => ({
   agentTool: agentTool(),
   ...over,
 }) as any;
+
+describe("cancelling mention preparation", () => {
+  it("does not load or prompt an already-cancelled clone", async () => {
+    const controller = new AbortController(); controller.abort();
+    expect(await runMentionClone(opts({ signal: controller.signal }))).toMatchObject({ spawned: false });
+    expect(createAgentSession).not.toHaveBeenCalled();
+    expect(loaders).toHaveLength(0);
+  });
+  it("disposes a clone cancelled during asynchronous session creation without prompting it", async () => {
+    const controller = new AbortController();
+    const session = { prompt: vi.fn(), dispose: vi.fn() };
+    createAgentSession.mockImplementationOnce(async () => { controller.abort(); return { session }; });
+    expect(await runMentionClone(opts({ signal: controller.signal }))).toMatchObject({ spawned: false });
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(session.dispose).toHaveBeenCalledOnce();
+  });
+  it("aborts an active clone and permanently refuses its late tool call", async () => {
+    const controller = new AbortController();
+    const tool = agentTool();
+    const session = cloneSession(async cloneTool => {
+      controller.abort();
+      await expect(cloneTool.execute("late", {}, undefined, undefined, {})).rejects.toThrow("cancelled");
+    });
+    expect(await runMentionClone(opts({ signal: controller.signal, agentTool: tool }))).toMatchObject({ spawned: false });
+    expect(session.abort).toHaveBeenCalledOnce();
+    expect(session.dispose).toHaveBeenCalledOnce();
+    expect(tool.execute).not.toHaveBeenCalled();
+  });
+});
 
 describe("cloning the conversation", () => {
   it.each([undefined, "", "parent", withFocusedExecutionGuidance("parent")])("includes shared focus guidance exactly once for parent %s", async (parent) => {

@@ -78,6 +78,8 @@ export interface MentionCloneOptions {
   message: string;
   /** The registered `Agent` tool, reused so the spawn is an ordinary one. */
   agentTool: ToolDefinition;
+  /** Cancel this preparation turn when the extension/session is disabled. */
+  signal?: AbortSignal;
 }
 
 export interface MentionCloneResult {
@@ -99,6 +101,7 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
   const cloneAgentTool: ToolDefinition = {
     ...agentTool,
     execute: (_cloneToolCallId, params, signal, onUpdate, _cloneCtx) => {
+      if (opts.signal?.aborted) return Promise.reject(new Error("Mention preparation was cancelled"));
       // One spawn per mention. The clone has a single tool and every reason to
       // stop after using it, but a model that decides to "also" launch a second
       // agent would do it where nobody can see and nobody asked.
@@ -128,7 +131,10 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
   };
 
   let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+  const onAbort = () => { void Promise.resolve(session?.abort?.()).catch(() => {}); };
+  opts.signal?.addEventListener("abort", onAbort, { once: true });
   try {
+    opts.signal?.throwIfAborted();
     // Pi 0.80.8 moved createAgentSession from modelRegistry to modelRuntime;
     // agent-runner.ts carries the same shim for the same reason — pass both so
     // the clone keeps the parent's providers across the supported range.
@@ -153,6 +159,7 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
       appendSystemPromptOverride: () => [],
     });
     await runInChildSessionContext(() => loader.reload());
+    opts.signal?.throwIfAborted();
     const created = await runInChildSessionContext(() =>
       createAgentSession({
         cwd: ctx.cwd,
@@ -180,6 +187,7 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
       } as Parameters<typeof createAgentSession>[0]),
     );
     session = created.session;
+    opts.signal?.throwIfAborted();
 
     // User text first, reminder after — the order Claude Code's attachment
     // renderer produces, where the reminder trails the message it is about.
@@ -187,6 +195,7 @@ export async function runMentionClone(opts: MentionCloneOptions): Promise<Mentio
   } catch (err) {
     return { spawned, error: err instanceof Error ? err.message : String(err) };
   } finally {
+    opts.signal?.removeEventListener("abort", onAbort);
     session?.dispose?.();
   }
 
