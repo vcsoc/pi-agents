@@ -86,6 +86,9 @@ import { fullWorkflowToolDescription } from "./workflow/tool-description.js";
 import { isWorktreeIsolationEnabled, setWorktreeIsolationEnabled } from "./worktree.js";
 import { escapeXml } from "./xml.js";
 
+// Capture once per module load so an on-disk update cannot masquerade as a reloaded runtime.
+const EXTENSION_VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+
 // ---- Shared helpers ----
 
 /** Tool execute return value for a text response. */
@@ -4385,8 +4388,12 @@ Write the file using the write tool. Only write the file, nothing else.`;
 
   let demoRunning = false;
   pi.registerCommand("agents", {
-    description: "Manage agents; /agents demo runs a bounded four-agent demonstration",
+    description: "Manage agents; /agents version shows the loaded version; /agents demo runs a bounded four-agent demonstration",
     handler: async (args, ctx) => {
+      if (args.trim() === "version") {
+        ctx.ui.notify(`pi-agents v${EXTENSION_VERSION} (loaded)`, "info");
+        return;
+      }
       if (args.trim() === "demo") {
         if (demoRunning) { ctx.ui.notify("An agents demo is already running.", "warning"); return; }
         demoRunning = true;

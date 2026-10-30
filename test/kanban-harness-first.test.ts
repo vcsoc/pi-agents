@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -58,6 +58,18 @@ const data = (result: any) => JSON.parse(result.content[0].text);
 const spec = { holdInBacklog: true, title: "Native task", scope: "Verify native ownership", assignee: "operate", rubric: [{ title: "Native ownership preserved", weight: 100 }] };
 
 describe("harness-first extension lifecycle", () => {
+  it("reports the loaded package version without starting agents or opening the interface", async () => {
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "agents")[1];
+    const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    const lock = JSON.parse(readFileSync(new URL("../package-lock.json", import.meta.url), "utf8"));
+    expect(lock.version).toBe(manifest.version);
+    expect(lock.packages[""].version).toBe(manifest.version);
+    const opened = vi.mocked(startKanbanServer).mock.calls.length;
+    await command.handler("  version  ", ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(`pi-agents v${manifest.version} (loaded)`, "info");
+    expect(vi.mocked(startKanbanServer).mock.calls).toHaveLength(opened);
+    expect(tools.has("Kanban")).toBe(false);
+  });
   it("keeps native delegation and task tools usable with the interface off, on, then off", async () => {
     await hooks.get("before_agent_start")({}, ctx);
     expect(tools.has("Kanban")).toBe(true);

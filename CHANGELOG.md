@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Historical issue numbers below refer to the upstream project, not this fork's issue tracker.
 
+## [0.1.4] - 2026-10-30
+
+### Added
+- `/agents version` reports the extension version captured at module load, allowing users to check update activation after reload or restart.
+
+### Changed
+- Prepared Kanban tasks release immediately to Ready with default independent operator/tester/reviewer sessions; explicit user Backlog holds remain supported.
+
 ## [Unreleased]
 
 ### Added

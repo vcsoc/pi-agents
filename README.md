@@ -1,5 +1,7 @@
 # pi-agents
 
+Check the loaded extension version with `/agents version` after updating and running `/reload`. The displayed version is captured when the extension module loads, not read afresh from disk on each command. If it remains stale, exit Pi and restart with `pi --continue`.
+
 A provider-neutral [Pi](https://pi.dev) extension for parallel agents and scripted workflow orchestration. Each agent runs in a separate Pi session with its own tools, prompt, model, and thinking level. All built-in agents inherit the parent session's model unless you explicitly choose another one.
 
 Use any tool-calling chat model configured in Pi, including hosted providers and local servers. Agents use your existing Pi credentials and model settings. No separate provider setup is needed in this extension.
