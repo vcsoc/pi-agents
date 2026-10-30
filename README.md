@@ -301,7 +301,7 @@ When the optional Kanban interface is enabled, the command opens a separate, rea
 
 **The native Pi harness always owns execution.** With Kanban off (the default), manage agents directly through `/crew`, Agent, results and steering. No Kanban tool, board initialization, task dispatch, rubric assignment or managed acceptance workflow is used; progress and results stay in the human-readable native agents harness. Complete small work directly and delegate only when useful, without unnecessary task handoffs or polling. Turning Kanban on enables its task tool, planning/acceptance workflow and web board in trusted projects. Turning it off hides the tool, removes its workflow guidance and stops new task dispatch without cancelling already-running workers or discarding sessions/evidence. Those workers can finish their existing checkpoint; subsequent roles wait until Kanban is enabled again. `/crew tasks` and `/crew kban` do not activate Kanban while it is off.
 
-Enable **Kanban** in `/crew` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`), then run:
+Run `/crew on` to enable Kanban or `/crew off` to disable it and use native agents directly. Both commands apply immediately, save the project setting, and leave existing workers intact without opening the menu or browser. You can also use **Kanban** in `/crew` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`). With Kanban enabled, run:
 
 ```text
 /crew kban

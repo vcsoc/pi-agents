@@ -4,9 +4,11 @@ The native Pi harness is always the operational home for pi-crew. Kanban is an o
 
 ## Enable And Open
 
-1. Open `/crew`, choose Settings, and turn Kanban on.
+1. Run `/crew on`, or open `/crew`, choose Settings, and turn Kanban on.
 2. Run `/crew kban`. Pi opens a browser and also prints the private URL.
 3. Ask the main agent to break your request into scopes, assign each task, define its acceptance rubric, and release the work.
+
+Run `/crew off` to switch back to direct native-agent management. `/crew on` and `/crew off` apply immediately and persist the project setting without opening a menu or browser. If saving fails, Pi explicitly warns that the change is session-only. Existing workers and evidence are preserved.
 
 You can also set `"kanbanEnabled": true` in project or personal `subagents.json` and reload Pi. The setting controls the entire Kanban workflow, not only the web interface. Disabling it withdraws the orchestrator tool and its prompt guidance, suppresses board notifications and new task dispatch, and closes the local server. Existing workers retain their bindings and can drain their current checkpoint safely; their evidence is preserved, but follow-on roles do not dispatch while off. An idle disabled controller does not read the board. Re-enabling restores the tool and eligible dispatch without duplicating workers or restarting user-paused, suspended, cancelled or archived work. A trusted project is required for task-service activation.
 

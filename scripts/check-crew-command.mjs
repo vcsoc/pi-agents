@@ -12,6 +12,7 @@ assert.ok(end > start);
 const commands = new Map();
 const notices = [];
 let menus = 0;
+const toggles = [];
 const controller = {
   pauseAll: async () => {},
   pauseAgent: async () => {},
@@ -21,6 +22,8 @@ const sandbox = {
   pi: { registerCommand: (name, command) => commands.set(name, command) },
   EXTENSION_VERSION: 'test-version',
   kanbanEnabled: false,
+  setKanbanEnabled: enabled => { sandbox.kanbanEnabled = enabled; toggles.push(enabled); },
+  notifyApplied: (ctx, message) => ctx.ui.notify(message, 'info'),
   showAgentsMenu: async () => { menus++; },
   ensureKanban: () => controller,
 };
@@ -33,6 +36,14 @@ await command.handler('  version  ', ctx);
 assert.deepEqual(notices.pop(), ['pi-crew vtest-version (loaded)', 'info']);
 await command.handler('', ctx);
 assert.equal(menus, 1);
+await command.handler('  on  ', ctx);
+assert.equal(sandbox.kanbanEnabled, true);
+assert.match(notices.pop()[0], /Kanban enabled/);
+await command.handler('off', ctx);
+assert.equal(sandbox.kanbanEnabled, false);
+assert.deepEqual(toggles, [true, false]);
+assert.match(notices.pop()[0], /Kanban off/);
+assert.equal(menus, 1);
 await command.handler('tasks', ctx);
 assert.match(notices.pop()[0], /Kanban is off/);
 await command.handler('kban', ctx);
@@ -42,4 +53,4 @@ await command.handler('tasks', ctx);
 assert.match(notices.pop()[0], /Kanban tasks/);
 await command.handler('tasks invalid', ctx);
 assert.match(notices.pop()[0], /Use \/crew tasks/);
-console.log('PASS: /crew registration, no legacy command, help, loaded version, menu, tasks, task usage, and disabled Kanban guidance');
+console.log('PASS: /crew registration, no legacy command, help, loaded version, on/off toggles, menu, tasks, task usage, and disabled Kanban guidance');

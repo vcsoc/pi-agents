@@ -58,6 +58,35 @@ const data = (result: any) => JSON.parse(result.content[0].text);
 const spec = { holdInBacklog: true, title: "Native task", scope: "Verify native ownership", assignee: "operate", rubric: [{ title: "Native ownership preserved", weight: 100 }] };
 
 describe("harness-first extension lifecycle", () => {
+  it("toggles and persists Kanban through /crew on and off without opening the menu", async () => {
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    const opened = vi.mocked(startKanbanServer).mock.calls.length;
+    for (const mode of ["on", "on", "off", "off"]) {
+      await command.handler(`  ${mode}  `, ctx);
+      const saved = JSON.parse(readFileSync(join(ctx.cwd, ".pi", "subagents.json"), "utf8"));
+      expect(saved.kanbanEnabled).toBe(mode === "on");
+      expect(pi.events.emit).toHaveBeenLastCalledWith("subagents:settings_changed", expect.objectContaining({ persisted: true, settings: expect.objectContaining({ kanbanEnabled: mode === "on" }) }));
+      const policy = await hooks.get("before_agent_start")({}, ctx);
+      if (mode === "on") {
+        expect(policy.message.customType).toBe("kanban-policy");
+        expect(tools.get("Kanban").exposure).not.toBe("hidden");
+      } else {
+        expect(policy.systemPrompt).toContain("<direct_agent_workflow>");
+        expect(tools.get("Kanban").exposure).toBe("hidden");
+      }
+    }
+    expect(vi.mocked(startKanbanServer).mock.calls).toHaveLength(opened);
+    expect(existsSync(join(root, "agent", "subagents.json"))).toBe(false);
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Kanban off"), "info");
+  });
+  it("warns when a command toggle cannot be persisted while applying it for the session", async () => {
+    writeFileSync(join(ctx.cwd, ".pi"), "not a directory");
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    await command.handler("on", ctx);
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("session only; failed to persist"), "warning");
+    const policy = await hooks.get("before_agent_start")({}, ctx);
+    expect(policy.message.customType).toBe("kanban-policy");
+  });
   it("removes only stale extension-owned Kanban context while off", () => {
     const ordinary = { role: "user", content: "User instructions" };
     const native = { role: "custom", customType: "subagent-notification", content: "Agent finished" };

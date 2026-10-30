@@ -4394,14 +4394,23 @@ Write the file using the write tool. Only write the file, nothing else.`;
       snapshotSettings(),
       successMsg,
       (event, payload) => pi.events.emit(event, payload),
+      ctx.cwd,
     );
     ctx.ui.notify(message, level);
   }
 
   let demoRunning = false;
   pi.registerCommand("crew", {
-    description: "Manage agents; /crew version shows the loaded version; /crew demo runs a bounded four-agent demonstration",
+    description: "Manage agents; /crew on or /crew off toggles Kanban; /crew version shows the loaded version; /crew demo runs a bounded four-agent demonstration",
     handler: async (args, ctx) => {
+      const mode = args.trim();
+      if (mode === "on" || mode === "off") {
+        setKanbanEnabled(mode === "on");
+        notifyApplied(ctx, kanbanEnabled
+          ? "Kanban enabled. Open /crew kban."
+          : "Kanban off; manage agents directly in /crew. Existing workers are preserved.");
+        return;
+      }
       if (args.trim() === "version") {
         ctx.ui.notify(`pi-crew v${EXTENSION_VERSION} (loaded)`, "info");
         return;
