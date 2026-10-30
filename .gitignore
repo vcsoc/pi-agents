@@ -25,6 +25,9 @@ Thumbs.db
 *~
 .scratch
 
+# Disposable conventional runtime configuration generated from tracked fixtures
+test/fixtures/.runtime-*/
+
 # Temporary files
 *.tmp
 .temp/

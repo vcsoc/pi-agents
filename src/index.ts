@@ -281,7 +281,7 @@ function buildNotificationDetails(record: AgentRecord, resultMaxLen: number, act
  *   Rendering both "*" tells the orchestrator a tool-less agent can run `bash`.
  * - empty-with-extensions vs empty-without. Zero built-ins does NOT imply zero
  *   tools: `tools: none` alongside `extensions:` still surfaces every extension
- *   tool (see test/fixtures/.pi/agents/tools-none.md, which expects three). Calling
+ *   tool (see test/fixtures/runtime-config/agents/tools-none.md, which expects three). Calling
  *   that "none" understates the agent instead of overstating it — better, but still
  *   wrong, and it would route work away from the only agent able to do it. "none"
  *   is therefore reserved for agents that genuinely can call nothing: `isolated`

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { sourceFingerprint, sourceNames } from "./execution.js";
@@ -61,6 +61,40 @@ export function createSnapshot(project: string, workspace: string, manifestFile:
     if (differences(before, capture(project)).length || differences(before, capture(workspace)).length) throw new Error("Source changed during snapshot creation; retry from backlog");
     writeFileSync(manifestFile, JSON.stringify(before), { mode: 0o600 });
   } catch (e) { rmSync(workspace, { recursive: true, force: true }); throw e; }
+}
+
+/** Rebase only accepted dependency changes, into a new checkpoint; never edit the retained parent. */
+export function reconcileSnapshot(project: string, workspace: string, manifestFile: string, dependencies: { workspace: string; manifest: string; fingerprint: string }[]) {
+  const baseline = JSON.parse(readFileSync(manifestFile, "utf8")) as Manifest;
+  const caller = capture(project), parent = capture(workspace);
+  const incoming = differences(baseline, caller);
+  const edits = differences(baseline, parent);
+  const overlap = incoming.filter(name => edits.includes(name));
+  if (overlap.length) throw new Error(`Checkpoint reconciliation overlap: ${overlap.join(", ")}. Retained parent and evidence unchanged; resolve through separately authorized work.`);
+  const authorized = new Map<string, (Entry | undefined)[]>();
+  for (const dep of dependencies) {
+    if (sourceFingerprint(dep.workspace) !== dep.fingerprint) throw new Error("Accepted dependency source changed; refusing checkpoint reconciliation");
+    const original = JSON.parse(readFileSync(dep.manifest, "utf8")) as Manifest, accepted = capture(dep.workspace);
+    for (const name of differences(original, accepted)) authorized.set(name, [...(authorized.get(name) ?? []), accepted.files[name]]);
+  }
+  if (!incoming.length) return undefined;
+  const unrelated = incoming.filter(name => !authorized.get(name)?.some(entry => same(entry, caller.files[name])));
+  if (unrelated.length) throw new Error(`Checkpoint reconciliation conflict: unaccepted caller changes at ${unrelated.join(", ")}`);
+  const next = `${workspace}-continued-${randomUUID()}`, manifest = `${next}.json`;
+  try {
+    createSnapshot(project, next, manifest);
+    for (const name of edits) {
+      const target = safePath(next, name), entry = parent.files[name];
+      if (!entry) { rmSync(target); continue; }
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, readFileSync(safePath(workspace, name)), { mode: entry.mode });
+      chmodSync(target, entry.mode);
+    }
+    const expected: Manifest = { files: { ...caller.files }, protected: [] };
+    for (const name of edits) { if (parent.files[name]) expected.files[name] = parent.files[name]; else delete expected.files[name]; }
+    if (differences(parent, capture(workspace)).length || differences(caller, capture(project)).length || differences(expected, capture(next)).length) throw new Error("Source changed during checkpoint reconciliation; original checkpoint retained");
+    return { workspace: next, manifest, incoming, edits };
+  } catch (e) { rmSync(next, { recursive: true, force: true }); rmSync(manifest, { force: true }); throw e; }
 }
 
 function matchesEntry(path: string, entry: Entry) {

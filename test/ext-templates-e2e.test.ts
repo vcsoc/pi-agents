@@ -5,7 +5,7 @@
  * Unlike agent-runner-e2e.test.ts (which builds AgentConfig objects in code),
  * this exercises the FULL chain from frontmatter onward:
  *
- *   test/fixtures/.pi/agents/*.md         (pre-configured agent templates)
+ *   test/fixtures/runtime-config/agents/*.md         (pre-configured agent templates)
  *     → real loadCustomAgents()           (frontmatter → parseToolsField/ext:)
  *     → registerAgents()                  (real registry)
  *     → real runAgent() [headless]        (real DefaultResourceLoader loads the
@@ -23,7 +23,7 @@
  * paths resolve and the .mjs fixtures can import `@sinclair/typebox` from the
  * repo's node_modules.
  */
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,7 +40,7 @@ import { registerFauxProvider } from "./helpers/pi-ai.js";
 vi.setConfig({ testTimeout: 30_000 });
 
 const FIXTURES_DIR = resolve(fileURLToPath(new URL("./fixtures", import.meta.url)));
-const TEMPLATES_DIR = join(FIXTURES_DIR, ".pi", "agents");
+const TEMPLATES_DIR = join(FIXTURES_DIR, "runtime-config", "agents");
 
 function csv(val: unknown): string[] {
   return typeof val === "string" ? val.split(",").map((s) => s.trim()).filter(Boolean) : [];
@@ -69,6 +69,7 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
   let prevAgentDir: string | undefined;
   let prevHome: string | undefined;
   let hermeticDir: string;
+  let runtimeDir: string;
   let faux: ReturnType<typeof registerFauxProvider>;
 
   beforeAll(() => {
@@ -82,10 +83,12 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
 
     faux = registerFauxProvider({ provider: "faux", models: [{ id: "faux-1", contextWindow: 200_000 }] });
 
-    // Load the templates through the REAL loader (project agents come from
-    // <cwd>/.pi/agents → FIXTURES_DIR/.pi/agents) and install them in the
-    // registry runAgent reads from.
-    registerAgents(loadCustomAgents(FIXTURES_DIR));
+    // Materialize genuine tracked fixtures at the runtime's conventional paths.
+    // Keep imports beneath the repository so extensions resolve its prepared dependencies.
+    runtimeDir = mkdtempSync(join(FIXTURES_DIR, ".runtime-"));
+    cpSync(join(FIXTURES_DIR, "runtime-config"), join(runtimeDir, ".pi"), { recursive: true });
+    for (const file of readdirSync(FIXTURES_DIR).filter(file => file.endsWith('.mjs'))) cpSync(join(FIXTURES_DIR, file), join(runtimeDir, file));
+    registerAgents(loadCustomAgents(runtimeDir));
   });
 
   afterAll(() => {
@@ -95,6 +98,7 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
     if (prevHome == null) delete process.env.HOME;
     else process.env.HOME = prevHome;
     rmSync(hermeticDir, { recursive: true, force: true });
+    if (runtimeDir) rmSync(runtimeDir, { recursive: true, force: true });
   });
 
   async function runScenario(agentName: string): Promise<{ active: string[]; prompt: string }> {
@@ -112,7 +116,7 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
     // cwd = fixtures dir so the templates' relative extensions: paths resolve.
     // getSystemPrompt returns a distinctive marker so prompt_mode: append can be
     // proven to inherit the parent prompt.
-    const ctx: any = { cwd: FIXTURES_DIR, getSystemPrompt: () => PARENT_PROMPT, isProjectTrusted: () => true, model, modelRegistry };
+    const ctx: any = { cwd: runtimeDir, getSystemPrompt: () => PARENT_PROMPT, isProjectTrusted: () => true, model, modelRegistry };
     const pi: any = { exec: async () => ({ code: 1, stdout: "", stderr: "" }) };
 
     // Mirror production: the caller resolves frontmatter-locked fields (isolated,
@@ -126,7 +130,7 @@ describe("ext: / tools: scoping — template-driven e2e (real pi-mono, headless)
       await runAgent(ctx, agentName, "go", {
         pi,
         model,
-        cwd: FIXTURES_DIR,
+        cwd: runtimeDir,
         isolated: resolved.isolated,
         inheritContext: resolved.inheritContext,
         onSessionCreated: (s) => {

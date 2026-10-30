@@ -7,6 +7,7 @@ tsconfig.json
 # Documentation
 PLAN.md
 SUMMARY.md
+revision.md
 plan/
 media/
 
@@ -20,7 +21,7 @@ npm-debug.log*
 .DS_Store
 .scratch
 
-# Tests (if any)
+# Tests and genuine runtime-config fixture sources (development only)
 test/
 tests/
 *.test.ts

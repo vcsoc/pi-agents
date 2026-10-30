@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
+import { reconcileSnapshot } from "./snapshot.js";
 
 export const COLUMNS = ["backlog", "ready", "in progress", "review", "done"] as const;
 export type Column = typeof COLUMNS[number];
@@ -15,11 +16,15 @@ export interface Comment { id: string; author: string; text: string; at: string;
 export interface Audit { id?: string; at: string; actor: string; event: string; data?: unknown; identity?: WorkerIdentity; durationMs?: number | null; mutationDurationMs?: number; delayMs?: number | null }
 export interface Activity extends Audit { taskId: string; summary?: string; commentId?: string }
 export interface Lease { isolated?: boolean; identity?: WorkerIdentity; token: string; owner: string; pid: number; role: Role; revision: number; commentOnly?: boolean }
+export interface TaskLink { targetId: string; type: 'depends-on' | 'completed-before' | 'completed-after'; blocking: boolean }
+export interface SubtaskProposal { parentId: string; title: string; scope: string; reason: string; expectedResult: string; relationship: TaskLink }
 export interface Task {
   id: string; title: string; scope: string; assignee: string; testerAgent: string; reviewerAgent: string;
   column: Column; phase: Role; revision: number; userPaused?: boolean; rubric: Criterion[]; evaluations: Partial<Record<Role, Evaluation>>;
   tests: TestEvidence[]; comments: Comment[]; history: Audit[]; archived: boolean; createdAt: string; updatedAt: string;
   disposition?: { kind: "cancelled"; reason: string; actor: "user" | "orchestrator"; at: string };
+  parentId?: string; links?: TaskLink[]; bestPractices?: string; proposal?: { reason: string; expectedResult: string; approved?: boolean };
+  suspension?: { dependencyIds: string[]; column: Column; phase: Role; at: string; notified?: boolean };
   prMode: "none" | "review" | "merge"; mergeApproved: boolean;
   pr?: { number: number; url: string; branch: string; completed: boolean; synced: boolean };
   workers?: Partial<Record<Role, WorkerIdentity>>; workerStatus?: WorkerStatus;
@@ -30,7 +35,7 @@ export interface Task {
 export interface Board { version: 1; id: string; name: string; projectPath: string; sequence: number; tasks: Task[]; activity?: Activity[] }
 export interface NewTask {
   title: string; scope: string; assignee: string; rubric: Criterion[]; testerAgent?: string; reviewerAgent?: string;
-  prMode?: Task["prMode"]; maxRuns?: number;
+  prMode?: Task["prMode"]; maxRuns?: number; bestPractices?: string;
 }
 const now = () => new Date().toISOString();
 export function text(value: unknown, label: string, max = 20000): string {
@@ -75,7 +80,7 @@ export class KanbanStore {
     for (const t of b.tasks) {
       t.history.forEach((e, i) => { e.id ??= `legacy:${t.id}:${i}`; e.durationMs ??= null; e.delayMs ??= i ? Math.max(0, Date.parse(e.at) - Date.parse(t.history[i - 1].at)) : null; });
       for (const c of t.comments) { c.details ??= c.text; c.summary ??= c.text.split(/\r?\n/)[0].slice(0, 240); }
-      if (t.workerStatus && !t.lease && ["working", "thinking", "waiting_dependency"].includes(t.workerStatus.state)) {
+      if (t.workerStatus && !t.lease && !t.suspension && ["working", "thinking", "waiting_dependency"].includes(t.workerStatus.state)) {
         t.workerStatus = { ...t.workerStatus, state: t.blocked ? "error" : "idle", reason: t.blocked ?? "No active worker lease", since: t.updatedAt, updatedAt: t.updatedAt };
       }
     }
@@ -113,6 +118,7 @@ export class KanbanStore {
       const before = new Map(board.tasks.map(t => [t.id, { json: JSON.stringify(t), history: t.history.length }]));
       const started = performance.now();
       const result = mutate(board);
+      this.reconcileDependencies(board);
       const duration = Math.max(0, performance.now() - started);
       for (const t of board.tasks) {
         const prior = before.get(t.id);
@@ -202,8 +208,12 @@ export class KanbanStore {
       }
     });
   }
+  assertImplementation(t: Task, lease: Lease) {
+    this.assertActive(t, lease);
+    if (lease.commentOnly || lease.role !== 'operator' || lease.identity?.definition !== t.assignee || t.workers?.operator?.id !== lease.identity?.id || t.lease?.owner !== lease.owner) throw new Error('Only the assigned execution owner with an active operator lease may implement artifact scope; propose a linked sub-task for another owner');
+  }
   assertActive(t: Task, lease: Lease) {
-    if (t.disposition?.kind === "cancelled" || t.archived || t.column === "backlog" || (t.column === "done" && !lease.commentOnly) || t.lease?.token !== lease.token || t.revision !== lease.revision || t.phase !== lease.role) throw new Error("Task is paused, archived, completed, reassigned, or this run is stale. Stop work.");
+    if (t.suspension || t.disposition?.kind === "cancelled" || t.archived || t.column === "backlog" || (t.column === "done" && !lease.commentOnly) || t.lease?.token !== lease.token || t.revision !== lease.revision || t.phase !== lease.role) throw new Error("Task is paused, archived, completed, reassigned, or this run is stale. Stop work.");
   }
   create(input: NewTask, actor: string): Task {
     return this.change(b => {
@@ -215,7 +225,7 @@ export class KanbanStore {
       const task: Task = {
         id: randomUUID(), title: text(input.title, "Title", 200), scope: text(input.scope, "Scope"),
         assignee: text(input.assignee, "Assigned agent", 100), testerAgent: text(input.testerAgent ?? "operate", "Tester agent", 100), reviewerAgent: text(input.reviewerAgent ?? "operate", "Reviewer agent", 100),
-        rubric: validateRubric(input.rubric), column: "backlog", phase: "operator", revision: 1,
+        rubric: validateRubric(input.rubric), bestPractices: input.bestPractices, column: "backlog", phase: "operator", revision: 1,
         evaluations: {}, tests: [], comments: [], history: [], archived: false, createdAt: now(), updatedAt: now(),
         prMode, mergeApproved: false, runs: 0, maxRuns,
       };
@@ -224,11 +234,61 @@ export class KanbanStore {
       return task;
     });
   }
+  accepted(t: Task): boolean {
+    return t.column === 'done' && !t.disposition && !!t.fingerprint && ['tester','reviewer','orchestrator'].every(role => { const e = t.evaluations[role as Role]; return e && e.total >= 85 && e.revision === t.revision && e.fingerprint === t.fingerprint; }) && t.tests.length > 0 && t.tests.every(e => e.exitCode === 0 && e.fingerprint === t.fingerprint);
+  }
+  prerequisites(b: Board, t: Task): string[] {
+    const ids = (t.links ?? []).filter(l => l.blocking && l.type !== 'completed-before').map(l => l.targetId);
+    for (const other of b.tasks) if (other.links?.some(l => l.blocking && l.type === 'completed-before' && l.targetId === t.id)) ids.push(other.id);
+    return [...new Set(ids)];
+  }
+  private validateLinks(b: Board) {
+    for (const t of b.tasks) {
+      if (t.parentId && (t.parentId === t.id || !b.tasks.some(p => p.id === t.parentId))) throw new Error('Invalid parent reference');
+      for (const l of t.links ?? []) if (!['depends-on','completed-before','completed-after'].includes(l.type) || typeof l.blocking !== 'boolean' || l.targetId === t.id || !b.tasks.some(p => p.id === l.targetId)) throw new Error('Invalid directional relationship reference');
+    }
+    const visiting = new Set<string>(), visited = new Set<string>();
+    const visit = (t: Task) => { if (visiting.has(t.id)) throw new Error('Dependency cycle'); if (visited.has(t.id)) return; visiting.add(t.id); for (const id of this.prerequisites(b,t)) visit(this.task(b,id)); visiting.delete(t.id); visited.add(t.id); };
+    for (const t of b.tasks) visit(t);
+  }
+  link(id: string, links: TaskLink[], actor: string) {
+    if (actor !== 'orchestrator') throw new Error('Only orchestrator may configure relationships');
+    return this.change(b => { const t = this.task(b,id); if (t.archived || t.disposition || t.column === 'done') throw new Error('Terminal tasks cannot change dependencies'); t.links = links; this.validateLinks(b); this.audit(t, actor, 'directional relationships configured', links); this.reconcileDependencies(b); return t; });
+  }
+  propose(id: string, lease: Lease, input: SubtaskProposal): Task {
+    return this.change(b => {
+      const parent = this.task(b,id); this.assertActive(parent,lease);
+      if (lease.commentOnly) throw new Error('Comment-only runs cannot propose implementation work');
+      if (b.tasks.length >= 10000) throw new Error('Board has 10000 tasks; export history before adding more');
+      if (input.parentId !== id || input.relationship.targetId !== id) throw new Error('Proposal must explicitly link back to its assigned parent');
+      text(input.reason, 'Proposal reason'); text(input.expectedResult, 'Expected result');
+      const child: Task = { id: randomUUID(), title: text(input.title,'Title',200), scope: text(input.scope,'Bounded scope'), assignee: '', testerAgent: 'operate', reviewerAgent: 'operate', rubric: [], column: 'backlog', phase: 'operator', revision: 1, evaluations: {}, tests: [], comments: [], history: [], archived: false, createdAt: now(), updatedAt: now(), prMode: 'none', mergeApproved: false, runs: 0, maxRuns: 12, parentId: id, links: [input.relationship], proposal: { reason: input.reason, expectedResult: input.expectedResult } };
+      b.tasks.push(child); this.validateLinks(b); this.audit(child,lease.role,'linked sub-task proposed; orchestrator assignment required',input); this.appendComment(parent,{summary: 'Linked sub-task proposed: '+child.id, details: JSON.stringify(input)},lease.role); this.reconcileDependencies(b); return child;
+    });
+  }
+  reconcileDependencies(b: Board) {
+    for (const t of b.tasks) {
+      if (t.archived || t.disposition || t.column === 'done' || t.column === 'backlog') continue;
+      const pending = this.prerequisites(b,t).filter(id => !this.accepted(this.task(b,id)));
+      if (pending.length && !t.suspension) {
+        t.suspension = { dependencyIds: pending, column: t.column, phase: t.phase, at: now() };
+        t.lease = undefined; t.queue = undefined;
+        if (t.workerStatus) this.status(t,t.workerStatus.identity,'waiting_dependency','Suspended for accepted prerequisites',pending[0]);
+        this.audit(t,'system','dependency checkpoint suspended',t.suspension);
+      } else if (pending.length && t.suspension && (t.suspension.notified || JSON.stringify(t.suspension.dependencyIds) !== JSON.stringify(pending))) {
+        t.suspension.dependencyIds = pending; t.suspension.notified = false;
+        this.audit(t,'system','dependency checkpoint prerequisites updated',pending);
+      } else if (!pending.length && t.suspension && !t.suspension.notified) {
+        t.suspension.notified = true; this.appendComment(t,'Required sub-tasks are accepted Done. Orchestrator must explicitly continue this eligible checkpoint; no automatic restart.','orchestrator');
+        this.audit(t,'system','dependency checkpoint eligible for orchestrator continuation');
+      }
+    }
+  }
   reset(t: Task) {
     t.revision++; t.phase = "operator"; t.evaluations = {}; t.tests = []; t.fingerprint = undefined;
     if (t.pr) { t.pr.completed = false; t.pr.synced = false; }
     if (t.workerStatus) this.status(t, t.workerStatus.identity, "idle", "Task reset; active work cancelled");
-    t.lease = undefined; t.blocked = undefined; t.queue = undefined; t.mergeApproved = false;
+    t.lease = undefined; t.blocked = undefined; t.queue = undefined; t.mergeApproved = false; t.suspension = undefined;
   }
   pauseAll(actor: string) {
     return this.change(b => {
@@ -246,6 +306,32 @@ export class KanbanStore {
       if (expectedUpdatedAt && t.updatedAt !== expectedUpdatedAt) throw new Error("Task changed; reopen before modifying it");
       if (t.disposition?.kind === "cancelled") throw new Error("Cancelled tasks are terminal; create a new task to authorize new work");
       if (t.archived) throw new Error("Archived tasks cannot be resumed");
+      if (column === 'ready' && t.suspension) {
+        if (actor !== 'orchestrator') throw new Error('Only the orchestrator may explicitly continue a dependency checkpoint');
+        const pending = this.prerequisites(b, t).filter(id => !this.accepted(this.task(b, id)));
+        if (pending.length || t.userPaused || t.executionLease) throw new Error('Dependencies must be accepted Done and worker drained; manually paused checkpoints cannot resume');
+        const continuation = t.suspension;
+        if (t.snapshot && !t.workspace) throw new Error('Retained parent checkpoint is missing; cannot continue against another source');
+        if (t.snapshot && t.workspace) {
+          const ids = new Set<string>();
+          const visit = (task: Task) => { for (const dep of this.prerequisites(b, task)) if (!ids.has(dep)) { ids.add(dep); visit(this.task(b, dep)); } };
+          visit(t);
+          const dependencies = [...ids].map(id => this.task(b, id)).filter(dep => dep.snapshot).map(dep => {
+            if (!dep.workspace || !dep.fingerprint) throw new Error('Accepted dependency checkpoint is missing; cannot reconcile');
+            return { workspace: dep.workspace, manifest: dep.snapshot!.manifest, fingerprint: dep.fingerprint };
+          });
+          const reconciled = reconcileSnapshot(this.identity.projectPath, t.workspace, t.snapshot.manifest, dependencies);
+          if (reconciled) {
+            this.audit(t, actor, 'accepted dependency results reconciled; previous checkpoint and evidence retained', { previous: { workspace: t.workspace, snapshot: t.snapshot, revision: t.revision, fingerprint: t.fingerprint, tests: t.tests, evaluations: t.evaluations }, ...reconciled });
+            t.workspace = reconciled.workspace; t.revision++; t.snapshot = { revision: t.revision, manifest: reconciled.manifest };
+            t.tests = []; t.evaluations = {}; t.fingerprint = undefined; continuation.column = 'in progress'; continuation.phase = 'operator';
+          }
+        }
+        t.column = continuation.column; t.phase = continuation.phase; t.suspension = undefined; t.blocked = undefined; t.queue = undefined;
+        this.audit(t, actor, 'dependency checkpoint explicitly continued'); return t;
+      }
+      if (column === 'ready' && t.proposal && (actor !== 'orchestrator' || !t.proposal.approved)) throw new Error('Only the orchestrator may assign rubric, best practices and owner and release a proposed sub-task');
+      if (column === 'ready' && this.prerequisites(b, t).some(id => !this.accepted(this.task(b, id)))) throw new Error('Blocking prerequisites require accepted Done');
       if (column === "ready" && t.userPaused && actor !== "user") throw new Error("Only the user may release a task they paused in backlog");
       if (column === "backlog") { this.reset(t); t.column = column; if (actor === "user") t.userPaused = true; }
       else if (column === "ready" && t.blocked && !t.lease && !t.executionLease && t.column !== "done") { validateRubric(t.rubric); t.blocked = undefined; t.queue = undefined; t.userPaused = false; }
@@ -261,7 +347,10 @@ export class KanbanStore {
       if (expectedUpdatedAt && t.updatedAt !== expectedUpdatedAt) throw new Error("Task changed; reopen before editing it");
       if (t.archived || t.column !== "backlog" || t.lease) throw new Error("Move the task to backlog before editing");
       t.title = text(input.title, "Title", 200); t.scope = text(input.scope, "Scope");
+      if (t.proposal && actor !== 'orchestrator') throw new Error('Only the orchestrator may assign and refine a proposed sub-task');
       t.assignee = text(input.assignee, "Assigned agent", 100); t.rubric = validateRubric(input.rubric);
+      t.bestPractices = input.bestPractices === undefined ? t.bestPractices : text(input.bestPractices, 'Best practices');
+      if (t.proposal) { if (!t.bestPractices) throw new Error('Assign applicable best practices before releasing a proposed sub-task'); t.proposal.approved = true; }
       t.testerAgent = text(input.testerAgent ?? t.testerAgent, "Tester agent", 100);
       t.reviewerAgent = text(input.reviewerAgent ?? t.reviewerAgent, "Reviewer agent", 100);
       if (input.prMode !== undefined && input.prMode !== t.prMode) throw new Error("PR policy cannot change on an existing task; create a new task instead");
@@ -324,6 +413,8 @@ export class KanbanStore {
   claim(id: string, owner: string, commentOnly = false, isolated = false, capacity?: number): Lease {
     return this.change(b => {
       const t = this.task(b, id);
+      if (t.suspension || this.prerequisites(b, t).some(id => !this.accepted(this.task(b, id)))) throw new Error('Task suspended pending accepted dependencies; orchestrator continuation required');
+      if (t.proposal && !t.proposal.approved) throw new Error('Proposed sub-task requires orchestrator assignment and release');
       if (t.disposition?.kind === "cancelled" || t.archived || t.column === "backlog" || (!commentOnly && (!["ready", "in progress", "review"].includes(t.column) || t.phase === "orchestrator" || t.blocked))) throw new Error("Task is not dispatchable");
       if (commentOnly && (!t.comments.some(c => c.author === "user") || t.comments.filter(c => c.author === "user").at(-1)?.id === t.repliedThrough)) throw new Error("No unanswered user comment");
       // A handoff revokes tools immediately, but in-flight commands must drain before another role reuses the snapshot.
@@ -414,7 +505,7 @@ export class KanbanStore {
   complete(id: string, fingerprint: string, integrate?: (task: Task) => void) {
     return this.change(b => {
       const t = this.task(b, id);
-      if (t.archived || t.phase !== "orchestrator" || t.column !== "review" || t.fingerprint !== fingerprint) throw new Error("Task is not ready for completion");
+      if (t.suspension || this.prerequisites(b,t).some(id => !this.accepted(this.task(b,id))) || t.archived || t.phase !== "orchestrator" || t.column !== "review" || t.fingerprint !== fingerprint) throw new Error("Task is not ready for completion");
       for (const role of ["orchestrator", "tester", "reviewer"] as const) {
         const e = t.evaluations[role];
         if (!e || e.revision !== t.revision || e.fingerprint !== fingerprint || e.total < 85) throw new Error(`${role} must score this revision at least 85%`);

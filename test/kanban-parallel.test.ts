@@ -139,6 +139,49 @@ describe("safe non-PR parallel dispatch", () => {
   });
 });
 
+describe('accepted child checkpoint reconciliation', () => {
+  async function suspendedParent(childFile: string) {
+    const [id] = ready(); await controller.tick(); const parent = jobs[0];
+    writeFileSync(join(parent.cwd, 'app.ts'), 'parent implementation');
+    await call(parent, { action: 'handoff', notes: 'Parent checkpoint submission' }); await finish(parent);
+    const tester = active()[0]; await call(tester, { action: 'test', command: 'true' });
+    await call(tester, { action: 'evaluate', scores: [95], notes: 'Parent original evidence' });
+    await call(tester, { action: 'handoff', notes: 'Parent original independent tests' }); await finish(tester);
+    const reviewer = active()[0];
+    await call(reviewer, { action: 'propose', proposal: { parentId: id, title: 'Child result', scope: 'Separate source prerequisite', reason: 'Independent owner', expectedResult: 'Accepted source change', relationship: { targetId: id, type: 'completed-before', blocking: true } } });
+    const child = store.read().tasks.at(-1)!;
+    store.edit(child.id, { ...spec, bestPractices: 'Keep changes scoped and independently validated' }, 'orchestrator');
+    store.move(child.id, 'ready', 'orchestrator'); await controller.tick(); await finish(reviewer);
+    await accepted(child.id, path => writeFileSync(join(path, childFile), 'accepted child result'));
+    await controller.complete(child.id);
+    return { id, child: child.id, workspace: parent.cwd, previous: task(id) };
+  }
+  it('explicitly reconciles accepted child source into a fresh retained parent checkpoint and reruns all fingerprint gates', async () => {
+    const { id, child, workspace, previous } = await suspendedParent('other.ts');
+    expect(task(id).suspension?.notified).toBe(true); expect(active()).toHaveLength(0);
+    expect(readFileSync(join(workspace, 'other.ts'), 'utf8')).not.toBe('accepted child result');
+    store.move(id, 'ready', 'orchestrator');
+    const continued = task(id); expect(continued.workspace).not.toBe(workspace); expect(existsSync(workspace)).toBe(true);
+    expect(continued.revision).toBe(previous.revision + 1); expect(continued.phase).toBe('operator');
+    expect(continued.tests).toEqual([]); expect(continued.evaluations).toEqual({}); expect(continued.fingerprint).toBeUndefined();
+    expect(readFileSync(join(continued.workspace!, 'app.ts'), 'utf8')).toBe('parent implementation');
+    expect(readFileSync(join(continued.workspace!, 'other.ts'), 'utf8')).toBe('accepted child result');
+    const retained = continued.history.find(e => e.event.startsWith('accepted dependency results reconciled'))!.data as any;
+    expect(retained.previous.tests).toEqual(previous.tests); expect(retained.previous.evaluations).toEqual(previous.evaluations);
+    expect(task(child).column).toBe('done');
+    await controller.tick(); await accepted(id); await controller.complete(id);
+    expect(readFileSync(join(cwd, 'app.ts'), 'utf8')).toBe('parent implementation');
+    expect(readFileSync(join(cwd, 'other.ts'), 'utf8')).toBe('accepted child result');
+    expect(task(id).tests[0].fingerprint).toBe(sourceFingerprint(cwd));
+  });
+  it('rejects overlapping accepted-child/parent edits without clobbering either checkpoint or evidence', async () => {
+    const { id, workspace, previous } = await suspendedParent('app.ts');
+    expect(() => store.move(id, 'ready', 'orchestrator')).toThrow(/reconciliation overlap.*app.ts/);
+    expect(task(id)).toEqual(previous); expect(readFileSync(join(workspace, 'app.ts'), 'utf8')).toBe('parent implementation');
+    expect(readFileSync(join(cwd, 'app.ts'), 'utf8')).toBe('accepted child result'); expect(active()).toHaveLength(0);
+  });
+});
+
 describe("tested snapshot integration", () => {
   it("integrates exactly the tested source while preserving dirty work, index, branch and private files", async () => {
     writeFileSync(join(cwd, "other.ts"), "staged caller data"); git("add", "other.ts"); writeFileSync(join(cwd, "other.ts"), "unstaged caller data");

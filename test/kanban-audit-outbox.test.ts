@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuditOutbox } from "../src/kanban/audit-outbox.js";
 import { KanbanController } from "../src/kanban/controller.js";
-import { KanbanStore } from "../src/kanban/store.js";
+import { KanbanBoardBusyError, KanbanStore } from "../src/kanban/store.js";
 
 let root: string, store: KanbanStore;
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), "audit-outbox-")); const cwd = join(root, "project"); mkdirSync(cwd); store = new KanbanStore(cwd, join(root, "state")); });
@@ -103,7 +103,8 @@ describe("durable ordered observable audit delivery", () => {
       await controller.tick();
       expect(signal?.aborted).toBe(true);
       expect(stop).toHaveBeenCalledExactlyOnceWith("agent");
-      expect(notify).toHaveBeenCalledWith(expect.stringContaining("degraded"));
+      if (failure === 'board lock') expect(notify).not.toHaveBeenCalled();
+      else expect(notify).toHaveBeenCalledWith(expect.stringContaining("degraded"));
       expect(box.pending).toBe(1);
       expect(history(task.id).some(e => e.event === "tool start: bash")).toBe(false);
       await controller.tick();
@@ -123,6 +124,68 @@ describe("durable ordered observable audit delivery", () => {
       await expect(controller.close()).rejects.toThrow(/cleanup needs attention/);
       expect(box.pending).toBe(1);
     }
+  });
+  it.each([false, true])('typed contention shares a bounded drain, retains IDs and permits safe handoff recovery (exhaust=%s)', async exhaust => {
+    let binding: any;
+    const notify = vi.fn(), stop = vi.fn();
+    const task = store.create({ title: 'Drain', scope: 'Typed contention', assignee: 'operate', rubric: [{ title: 'Correct', weight: 100 }] }, 'orchestrator');
+    store.move(task.id, 'ready', 'orchestrator');
+    const controller = new KanbanController(store, { spawn: (_type, _prompt, b) => { binding = b; return 'agent'; }, record: () => ({ status: 'running' }) as any, stop, steer: vi.fn(), validAgent: () => true, notify });
+    await controller.tick();
+    const lock = join(store.directory, 'write.lock'); mkdirSync(lock); writeFileSync(join(lock, 'pid'), String(process.pid));
+    vi.useFakeTimers();
+    try {
+      binding.observe('tool start: read', null, 'working'); binding.observe('tool end: read', 3);
+      const box = (controller as any).outbox as AuditOutbox;
+      const original = JSON.parse(readFileSync(box.file, 'utf8'));
+      expect(() => binding.assertAllowed('read')).not.toThrow();
+      const observe = vi.spyOn(store, 'observe');
+      const first = binding.tool.execute('call', { action: 'get' });
+      const second = binding.tool.execute('call2', { action: 'get' });
+      // Attach rejection handlers before advancing deterministic timers.
+      const results = Promise.allSettled([first, second]);
+      await vi.advanceTimersByTimeAsync(exhaust ? 150 : 25);
+      expect(observe.mock.calls.length).toBe(exhaust ? 4 : 2);
+      if (exhaust) {
+        const outcomes = await results;
+        expect(outcomes.every(result => result.status === 'rejected' && result.reason instanceof KanbanBoardBusyError)).toBe(true);
+        expect(box.pending).toBe(2); expect(store.task(store.read(), task.id).phase).toBe('operator');
+      }
+      expect(readFileSync(join(lock, 'pid'), 'utf8')).toBe(String(process.pid));
+      rmSync(lock, { recursive: true });
+      await vi.advanceTimersByTimeAsync(150); await results;
+      await controller.tick();
+      await binding.tool.execute('handoff', { action: 'handoff', notes: 'Audit safely drained' });
+      expect(box.pending).toBe(0);
+      expect(history(task.id).filter(e => e.event.startsWith('tool ')).map(e => ({ id: e.id, at: e.at }))).toEqual(original.map((e: any) => ({ id: e.id, at: e.at })));
+      expect(store.task(store.read(), task.id).phase).toBe('tester'); expect(notify).not.toHaveBeenCalledWith(expect.stringContaining('dispatch paused'));
+      expect(stop).not.toHaveBeenCalled();
+    } finally { rmSync(lock, { recursive: true, force: true }); vi.useRealTimers(); await controller.close(); }
+  });
+  it('drains observations arriving during a contended handoff before advancing the phase', async () => {
+    let binding: any;
+    const task = store.create({ title: 'Handoff race', scope: 'Atomic audit gate', assignee: 'operate', rubric: [{ title: 'Correct', weight: 100 }] }, 'orchestrator');
+    store.move(task.id, 'ready', 'orchestrator');
+    const controller = new KanbanController(store, { spawn: (_type, _prompt, b) => { binding = b; return 'agent'; }, record: () => ({ status: 'running' }) as any, stop: vi.fn(), steer: vi.fn(), validAgent: () => true, notify: vi.fn(), run: async () => ({ code: 1, stdout: '', stderr: '' }) });
+    await controller.tick();
+    const lock = join(store.directory, 'write.lock'), real = store.handoff.bind(store);
+    const handoff = vi.spyOn(store, 'handoff').mockImplementationOnce(() => {
+      mkdirSync(lock); writeFileSync(join(lock, 'pid'), String(process.pid));
+      binding.observe('tool end during handoff: read', 3);
+      throw new KanbanBoardBusyError();
+    }).mockImplementation(real);
+    vi.useFakeTimers();
+    try {
+      const pending = binding.tool.execute('call', { action: 'handoff', notes: 'Final evidence' });
+      const result = Promise.allSettled([pending]);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(handoff).toHaveBeenCalledTimes(1); expect(store.task(store.read(), task.id).phase).toBe('operator');
+      rmSync(lock, { recursive: true }); await vi.advanceTimersByTimeAsync(50);
+      expect((await result)[0].status).toBe('fulfilled');
+      const events = history(task.id).map(e => e.event);
+      expect(events.indexOf('tool end during handoff: read')).toBeLessThan(events.indexOf('handoff'));
+      expect(events.filter(event => event === 'tool end during handoff: read')).toHaveLength(1);
+    } finally { rmSync(lock, { recursive: true, force: true }); vi.useRealTimers(); await controller.close(); }
   });
   it("surfaces shutdown failure and leaves a replayable durable outbox", async () => {
     const { id, lease } = start();

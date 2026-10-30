@@ -5,4 +5,4 @@ expect_tools_present: "read"
 expect_prompt_contains: "Preloaded Skill: probe-skill, SKILL_BODY_MARKER"
 ---
 A skill-preloading agent. The `skills: probe-skill` entry must inject
-test/fixtures/.pi/skills/probe-skill.md into the real session's system prompt.
+the materialized test/fixtures/runtime-config/skills/probe-skill.md fixture into the real session's system prompt.

@@ -35,6 +35,25 @@ afterEach(async () => {
   try { await controller.close(); }
   finally { vi.restoreAllMocks(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
 });
+describe('linked task capabilities', () => {
+  it('worker proposals notify the orchestrator and stop a blocked parent without spawning child work', async () => {
+    const id = await start(), first = jobs[0];
+    const output = await call(first.binding, { action: 'propose', proposal: { parentId: id, title: 'Bounded child', scope: 'Independent prerequisite', reason: 'Different implementation owner required', expectedResult: 'Validated prerequisite', relationship: { targetId: id, type: 'completed-before', blocking: true } } });
+    expect(output.terminate).toBe(true); expect(store.read().tasks).toHaveLength(2); expect(store.read().tasks[1].column).toBe('backlog');
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('Worker proposed linked sub-task'));
+    expect(() => first.binding.assertAllowed('edit')).toThrow(/stale/);
+    await controller.tick(); expect(stop).toHaveBeenCalledWith(first.record.id); expect(first.signal.aborted).toBe(true); expect(jobs).toHaveLength(1);
+    expect(task(id).snapshot).toBeDefined(); expect(task(id).revision).toBe(1);
+  });
+  it('assessment roles cannot implement via ordinary write/shell/deferred tools', async () => {
+    const id = await start(); await call(jobs[0].binding,{action:'handoff',notes:'Implemented scope'}); await finish(0);
+    const tester = jobs.at(-1)!.binding;
+    expect(task(id).phase).toBe('tester');
+    for(const tool of ['write','edit','bash','Agent','SubagentWorkflow','mcp_external_mutation']) expect(()=>tester.assertAllowed(tool)).toThrow(/cannot implement/);
+    for(const tool of ['read','grep','find','KanbanTask']) expect(()=>tester.assertAllowed(tool)).not.toThrow();
+    await call(tester,{action:'test',command:'npm test'}); expect(task(id).tests[0].exitCode).toBe(0);
+  });
+});
 describe("Kanban dispatch polling", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   function holdBoardLock() {
@@ -144,7 +163,16 @@ describe("Kanban dispatch polling", () => {
     });
     return { claimed, unlock: () => unlock() };
   }
-  it.each([undefined, new Error("Snapshot metadata preparation failed")])("retains failed setup cleanup after a successful claim and recovers without redispatch: %s", async setupError => {
+  it('retries transient preparation contention without permanently blocking the task', async () => {
+    const id = readyTask(), contention = contendAfterClaim();
+    controller.start();
+    try { await vi.advanceTimersByTimeAsync(1500); expect(jobs).toHaveLength(0); } finally { contention.unlock(); }
+    await vi.advanceTimersByTimeAsync(750);
+    expect(jobs).toHaveLength(1); expect(task(id).blocked).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(1500); expect(jobs).toHaveLength(1);
+    expect(notify.mock.calls.flat().join(' ')).not.toContain('dispatch paused');
+  });
+  it.each([new Error("Snapshot metadata preparation failed")])("retains failed setup cleanup after a successful claim and recovers without redispatch: %s", async setupError => {
     const id = readyTask(), contention = contendAfterClaim(setupError);
     const original = String(setupError ?? new KanbanBoardBusyError());
     const release = vi.spyOn(store, "release");
