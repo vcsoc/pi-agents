@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { KanbanBinding } from "../src/kanban/agent.js";
 import { bindKanbanGate, kanbanGate } from "../src/kanban/agent.js";
-import { KanbanController } from "../src/kanban/controller.js";
+import { KANBAN_GUIDELINES, KanbanController } from "../src/kanban/controller.js";
 import { type Command, fingerprint, prBody } from "../src/kanban/execution.js";
 import { KanbanBoardBusyError, KanbanStore, type NewTask } from "../src/kanban/store.js";
 import type { AgentRecord } from "../src/types.js";
@@ -34,6 +34,38 @@ beforeEach(() => {
 afterEach(async () => {
   try { await controller.close(); }
   finally { vi.restoreAllMocks(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
+});
+describe("immediate new-task release", () => {
+  const create = (args: Record<string, unknown> = {}) => controller.orchestratorTool().execute("create-task", { action: "create", title: spec.title, scope: spec.scope, rubric: spec.rubric, ...args } as never, new AbortController().signal, undefined, {} as never);
+  it("defaults to three operate roles, best practices and Ready without a second call", async () => {
+    const result = await create();
+    const created = JSON.parse(result.content[0].text);
+    expect(created).toMatchObject({ column: "ready", assignee: "operate", testerAgent: "operate", reviewerAgent: "operate" });
+    expect(created.bestPractices).toContain("Speed never permits bypassing acceptance");
+    // create schedules dispatch immediately; tick again once its asynchronous setup settles.
+    await vi.waitFor(() => expect(jobs).toHaveLength(1));
+    expect(task(created.id).column).toBe("in progress");
+  });
+  it("honors explicit Backlog holds without starting a worker", async () => {
+    const result = await create({ holdInBacklog: true });
+    const created = JSON.parse(result.content[0].text);
+    await controller.tick();
+    expect(task(created.id).column).toBe("backlog");
+    expect(jobs).toHaveLength(0);
+  });
+  it("preserves custom assignments and rejects incomplete criteria before creation", async () => {
+    const result = await create({ assignee: "custom-operator", testerAgent: "custom-tester", reviewerAgent: "custom-reviewer", bestPractices: "Project-specific checks", holdInBacklog: true });
+    expect(JSON.parse(result.content[0].text)).toMatchObject({ assignee: "custom-operator", testerAgent: "custom-tester", reviewerAgent: "custom-reviewer", bestPractices: "Project-specific checks" });
+    await expect(create({ rubric: [] })).rejects.toThrow();
+    expect(store.read().tasks).toHaveLength(1);
+  });
+  it("notifies the orchestrator to prepare user submissions immediately", () => {
+    const created = controller.createTask(spec, "user");
+    expect(created.column).toBe("backlog");
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining("then call Kanban ready in the same turn"));
+    expect(KANBAN_GUIDELINES).toContain("do not stop after reporting creation");
+    expect(KANBAN_GUIDELINES).toContain("Required interactive launch approvals remain binding");
+  });
 });
 describe('linked task capabilities', () => {
   it('worker proposals notify the orchestrator and stop a blocked parent without spawning child work', async () => {

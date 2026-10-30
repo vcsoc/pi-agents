@@ -55,7 +55,7 @@ afterEach(async () => {
 });
 const call = (name: string, args: unknown) => tools.get(name).execute("fixture", args, new AbortController().signal, undefined, ctx);
 const data = (result: any) => JSON.parse(result.content[0].text);
-const spec = { title: "Native task", scope: "Verify native ownership", assignee: "operate", rubric: [{ title: "Native ownership preserved", weight: 100 }] };
+const spec = { holdInBacklog: true, title: "Native task", scope: "Verify native ownership", assignee: "operate", rubric: [{ title: "Native ownership preserved", weight: 100 }] };
 
 describe("harness-first extension lifecycle", () => {
   it("keeps native delegation and task tools usable with the interface off, on, then off", async () => {
