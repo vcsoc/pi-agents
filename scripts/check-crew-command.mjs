@@ -21,6 +21,7 @@ const controller = {
 const sandbox = {
   pi: { registerCommand: (name, command) => commands.set(name, command) },
   EXTENSION_VERSION: 'test-version',
+  crewStatus: () => `Crew status: ${sandbox.extensionEnabled ? 'on' : 'off'}`,
   extensionEnabled: true,
   kanbanEnabled: false,
   setExtensionEnabled: async enabled => { sandbox.extensionEnabled = enabled; toggles.push(enabled); },
@@ -46,6 +47,8 @@ assert.equal(sandbox.extensionEnabled, false);
 assert.equal(sandbox.kanbanEnabled, false);
 assert.deepEqual(toggles, [true, false]);
 assert.match(notices.pop()[0], /pi-crew disabled/);
+await command.handler('  status  ', ctx);
+assert.deepEqual(notices.pop(), ['Crew status: off', 'info']);
 await command.handler('', ctx);
 assert.match(notices.pop()[0], /pi-crew is off/);
 assert.equal(menus, 1);
@@ -60,4 +63,4 @@ await command.handler('tasks', ctx);
 assert.match(notices.pop()[0], /Kanban tasks/);
 await command.handler('tasks invalid', ctx);
 assert.match(notices.pop()[0], /Use \/crew tasks/);
-console.log('PASS: /crew registration, no legacy command, help, loaded version, extension-wide on/off toggles independent of Kanban, menu, tasks, task usage, and disabled Kanban guidance');
+console.log('PASS: /crew registration, no legacy command, help, loaded version, status while disabled, extension-wide on/off toggles independent of Kanban, menu, tasks, task usage, and disabled Kanban guidance');

@@ -4484,9 +4484,34 @@ Write the file using the write tool. Only write the file, nothing else.`;
     ctx.ui.notify(message, level);
   }
 
+  function crewStatus(ctx: ExtensionContext): string {
+    const agents = manager.listAgents();
+    const running = agents.filter(agent => agent.status === "running").length;
+    const queued = agents.filter(agent => agent.status === "queued").length;
+    const workflows = [...workflowTasks.values()];
+    const feature = (saved: boolean) => `${extensionEnabled && saved ? "on" : "off"} (saved: ${saved ? "on" : "off"})`;
+    const settingsPath = join(ctx.cwd, ".pi", "subagents.json");
+    return [
+      `pi-crew v${EXTENSION_VERSION} — project status`,
+      `Project: ${ctx.cwd}`,
+      `Extension: ${extensionEnabled ? "on" : "off"}`,
+      `Project settings: ${settingsPath} (${existsSync(settingsPath) ? "present" : "not created"})`,
+      `Personal defaults: ${join(getAgentDir(), "subagents.json")}`,
+      `Tools: ${extensionEnabled ? "available" : "hidden"}`,
+      `Kanban: ${feature(kanbanEnabled)}; controller: ${kanban ? "initialized" : "not initialized"}`,
+      `Scheduling: ${feature(isSchedulingEnabled())}; scheduler: ${scheduler.isActive() ? "active" : "stopped"}`,
+      `Workflows: ${feature(isWorkflowsEnabled())}`,
+      `Mentions: ${extensionEnabled ? getAgentMentionMode() : "off"} (saved: ${getAgentMentionMode()})`,
+      `Fleet UI: ${feature(isFleetViewEnabled())}; widget: ${extensionEnabled ? getWidgetMode() : "off"} (saved: ${getWidgetMode()})`,
+      `Agents (session): ${running} running, ${queued} queued, ${agents.length - running - queued} finished/stopped`,
+      `Workflows (session): ${workflows.filter(task => task.status === "running").length} running, ${workflows.length} total`,
+      extensionEnabled ? "Controls: /crew off; /crew > Settings" : "Enable: /crew on",
+    ].join("\n");
+  }
+
   let demoRunning = false;
   pi.registerCommand("crew", {
-    description: "Manage Crew; /crew on or /crew off enables or disables the entire extension; /crew version shows the loaded version; /crew demo runs a bounded four-agent demonstration",
+    description: "Manage Crew; /crew status shows project status; /crew on or /crew off enables or disables the entire extension; /crew version shows the loaded version; /crew demo runs a bounded four-agent demonstration",
     handler: async (args, ctx) => {
       const mode = args.trim();
       if (mode === "on" || mode === "off") {
@@ -4494,6 +4519,10 @@ Write the file using the write tool. Only write the file, nothing else.`;
         notifyApplied(ctx, extensionEnabled
           ? "pi-crew enabled."
           : "pi-crew disabled. Tools, agent routing, scheduling and UI are off. Run /crew on to enable.");
+        return;
+      }
+      if (mode === "status") {
+        ctx.ui.notify(crewStatus(ctx), "info");
         return;
       }
       if (args.trim() === "version") {

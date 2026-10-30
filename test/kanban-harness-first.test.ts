@@ -196,6 +196,35 @@ describe("harness-first extension lifecycle", () => {
     expect(tools.has("Kanban")).toBe(false);
     expect(existsSync(join(root, "agent", "kanban"))).toBe(false);
   });
+  it.each([true, false])("reports read-only project status with master enabled=%s without activating Kanban or scheduling", async enabled => {
+    state.toggle!(true);
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    if (!enabled) await command.handler("off", ctx);
+    const settingsPath = join(ctx.cwd, ".pi", "subagents.json");
+    const before = existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : undefined;
+    const opened = vi.mocked(startKanbanServer).mock.calls.length;
+    const events = pi.events.emit.mock.calls.length;
+    await command.handler("  status  ", ctx);
+    const [message, level] = ctx.ui.notify.mock.calls.at(-1);
+    expect(level).toBe("info");
+    expect(message).toContain(`Project: ${ctx.cwd}`);
+    expect(message).toContain(`Extension: ${enabled ? "on" : "off"}`);
+    expect(message).toContain(`Kanban: ${enabled ? "on" : "off"} (saved: on); controller: not initialized`);
+    expect(message).toContain("scheduler: stopped");
+    expect(message).toContain("Agents (session): 0 running, 0 queued, 0 finished/stopped");
+    expect(message).toContain(settingsPath);
+    expect(existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : undefined).toBe(before);
+    expect(existsSync(join(root, "agent", "kanban"))).toBe(false);
+    expect(tools.has("Kanban")).toBe(false);
+    expect(pi.events.emit.mock.calls).toHaveLength(events);
+    expect(vi.mocked(startKanbanServer).mock.calls).toHaveLength(opened);
+  });
+  it("includes current session agent counts in status", async () => {
+    await call("Agent", { prompt: "fixture work", subagent_type: "operate", run_in_background: true });
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    await command.handler("status", ctx);
+    expect(ctx.ui.notify).toHaveBeenLastCalledWith(expect.stringContaining("Agents (session): 1 running, 0 queued, 0 finished/stopped"), "info");
+  });
   it("reports the loaded package version without starting agents or opening the interface", async () => {
     expect(pi.registerCommand.mock.calls.some(([name]: [string]) => name === "agents")).toBe(false);
     const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
