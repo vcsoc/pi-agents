@@ -10,6 +10,7 @@ import { KanbanBoardBusyError, KanbanStore, type NewTask } from "../src/kanban/s
 import type { AgentRecord } from "../src/types.js";
 
 let root: string, cwd: string, store: KanbanStore, controller: KanbanController;
+let enabled: boolean;
 let jobs: { binding: KanbanBinding; cwd: string; signal: AbortSignal; record: AgentRecord; finish: () => void }[];
 let run: ReturnType<typeof vi.fn<Command>>, stop: ReturnType<typeof vi.fn>, steer: ReturnType<typeof vi.fn>, notify: ReturnType<typeof vi.fn>;
 const spec: NewTask = { title: "Fix validation", scope: "Validate bad requests and test valid requests", assignee: "operate", rubric: [{ title: "Correctness and tests", weight: 100 }] };
@@ -22,7 +23,9 @@ beforeEach(() => {
   store = new KanbanStore(cwd, join(root, "state")); jobs = [];
   run = vi.fn(async (file: string) => ({ code: file === "git" ? 1 : 0, stdout: file === "bash" ? "Tests passed" : "", stderr: "" }));
   stop = vi.fn(id => { jobs.find(j => j.record.id === id)?.finish(); }); steer = vi.fn(); notify = vi.fn();
+  enabled = true;
   controller = new KanbanController(store, {
+    enabled: () => enabled,
     spawn: (_type, _prompt, binding, workingDir, signal) => {
       let resolve!: (s: string) => void; const promise = new Promise<string>(r => { resolve = r; });
       const record = { id: String(jobs.length), status: "running", promise } as AgentRecord;
@@ -35,6 +38,82 @@ afterEach(async () => {
   try { await controller.close(); }
   finally { vi.restoreAllMocks(); vi.useRealTimers(); rmSync(root, { recursive: true, force: true }); }
 });
+describe("disabled Kanban dispatch", () => {
+  it("does not read storage, notify or spawn when disabled and idle", async () => {
+    const t = store.create(spec, "orchestrator"); store.move(t.id, "ready", "orchestrator");
+    const read = vi.spyOn(store, "read");
+    enabled = false;
+    await controller.tick();
+    expect(read).not.toHaveBeenCalled();
+    expect(jobs).toHaveLength(0);
+    expect(notify).not.toHaveBeenCalled();
+    await expect(controller.orchestratorTool().execute("stale", { action: "list" } as never, undefined, undefined, {} as never)).rejects.toThrow("Kanban is off");
+  });
+  it("drains existing workers without dispatching a tester or aborting work", async () => {
+    const id = await start();
+    enabled = false;
+    await controller.tick();
+    expect(jobs[0].signal.aborted).toBe(false);
+    expect(stop).not.toHaveBeenCalled();
+    await call(jobs[0].binding, { action: "handoff", notes: "Implementation checkpoint" });
+    await finish(0);
+    expect(jobs).toHaveLength(1);
+    expect(notify).not.toHaveBeenCalled();
+    expect(task(id).phase).toBe("tester");
+    enabled = true;
+    await controller.tick();
+    expect(jobs).toHaveLength(2);
+    await controller.tick();
+    expect(jobs).toHaveLength(2);
+  });
+  it("does not spawn if disabled during asynchronous task preparation", async () => {
+    const t = store.create(spec, "orchestrator"); store.move(t.id, "ready", "orchestrator");
+    const preparing = controller.tick();
+    enabled = false;
+    await preparing;
+    expect(jobs).toHaveLength(0);
+    expect(task(t.id).executionLease).toBeUndefined();
+    expect(task(t.id).lease).toBeUndefined();
+    expect(task(t.id).snapshot).toBeDefined();
+    expect(task(t.id).runs).toBe(0);
+  });
+  it("retains an atomic unused-run refund across cleanup contention without double-refunding", async () => {
+    const t = store.create(spec, "orchestrator"); store.move(t.id, "ready", "orchestrator");
+    const release = store.release.bind(store), lock = join(store.directory, "write.lock");
+    vi.spyOn(store, "release").mockImplementationOnce((...args) => {
+      mkdirSync(lock); writeFileSync(join(lock, "pid"), String(process.pid));
+      return release(...args);
+    });
+    const preparing = controller.tick(); enabled = false;
+    let lease: NonNullable<ReturnType<typeof task>["lease"]>;
+    try {
+      await expect(preparing).rejects.toThrow(KanbanBoardBusyError);
+      lease = task(t.id).lease!;
+      expect(task(t.id).runs).toBe(1);
+      expect(jobs).toHaveLength(0);
+    } finally { rmSync(lock, { recursive: true, force: true }); }
+    await controller.tick();
+    expect(task(t.id).runs).toBe(0);
+    expect(task(t.id).lease).toBeUndefined();
+    expect(task(t.id).executionLease).toBeUndefined();
+    const next = store.claim(t.id, "next-owner");
+    store.release(t.id, lease!, undefined, true, true);
+    expect(task(t.id).runs).toBe(1);
+    expect(task(t.id).lease?.token).toBe(next.token);
+    store.release(t.id, next);
+  });
+  it.each(["evaluate", "complete"])("does not persist %s after being disabled during fingerprinting", async action => {
+    const t = store.create(spec, "orchestrator");
+    const before = store.read();
+    const evaluate = vi.spyOn(store, "evaluate"), complete = vi.spyOn(store, "complete");
+    run.mockImplementationOnce(async () => { enabled = false; return { code: 1, stdout: "", stderr: "" }; });
+    await expect(controller.orchestratorTool().execute("in-flight", { action, id: t.id, scores: [100], notes: "Review evidence" } as never, undefined, undefined, {} as never)).rejects.toThrow("Kanban is off");
+    expect(evaluate).not.toHaveBeenCalled();
+    expect(complete).not.toHaveBeenCalled();
+    expect(store.read()).toEqual(before);
+  });
+});
+
 describe("immediate new-task release", () => {
   const create = (args: Record<string, unknown> = {}) => controller.orchestratorTool().execute("create-task", { action: "create", title: spec.title, scope: spec.scope, rubric: spec.rubric, ...args } as never, new AbortController().signal, undefined, {} as never);
   it("defaults to three operate roles, best practices and Ready without a second call", async () => {
@@ -215,7 +294,7 @@ describe("Kanban dispatch polling", () => {
       expect(lease).toMatchObject({ owner: controller.owner, pid: process.pid });
       expect(task(id).executionLease?.token).toBe(lease.token);
       expect(jobs).toHaveLength(0);
-      expect(release).toHaveBeenLastCalledWith(id, lease, original, true);
+      expect(release).toHaveBeenLastCalledWith(id, lease, original, true, undefined);
       expect(notify).toHaveBeenCalledWith(expect.stringContaining(original));
       expect(notify).toHaveBeenCalledWith(expect.stringContaining("lease cleanup pending"));
       await vi.advanceTimersByTimeAsync(2250);

@@ -17,13 +17,14 @@ const controller = {
   pauseAgent: async () => {},
   view: () => ({ tasks: [], harnessRuns: [] }),
 };
-runInNewContext(source.slice(start, end), {
+const sandbox = {
   pi: { registerCommand: (name, command) => commands.set(name, command) },
   EXTENSION_VERSION: 'test-version',
   kanbanEnabled: false,
   showAgentsMenu: async () => { menus++; },
   ensureKanban: () => controller,
-});
+};
+runInNewContext(source.slice(start, end), sandbox);
 assert.deepEqual([...commands.keys()], ['crew']);
 const command = commands.get('crew');
 assert.match(command.description, /\/crew version/);
@@ -33,9 +34,12 @@ assert.deepEqual(notices.pop(), ['pi-crew vtest-version (loaded)', 'info']);
 await command.handler('', ctx);
 assert.equal(menus, 1);
 await command.handler('tasks', ctx);
-assert.match(notices.pop()[0], /Harness tasks/);
-await command.handler('tasks invalid', ctx);
-assert.match(notices.pop()[0], /Use \/crew tasks/);
+assert.match(notices.pop()[0], /Kanban is off/);
 await command.handler('kban', ctx);
 assert.match(notices.pop()[0], /\/crew > Settings/);
+sandbox.kanbanEnabled = true;
+await command.handler('tasks', ctx);
+assert.match(notices.pop()[0], /Kanban tasks/);
+await command.handler('tasks invalid', ctx);
+assert.match(notices.pop()[0], /Use \/crew tasks/);
 console.log('PASS: /crew registration, no legacy command, help, loaded version, menu, tasks, task usage, and disabled Kanban guidance');

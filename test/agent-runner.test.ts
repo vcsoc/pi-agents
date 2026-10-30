@@ -2784,6 +2784,8 @@ describe("agent-runner turn limits", () => {
     const { session, result } = await runWithTurns(5, { maxTurns: 5 });
     expect(session.steer).toHaveBeenCalledTimes(1);
     expect(session.steer.mock.calls[0][0]).toContain("turn limit");
+    expect(session.steer.mock.calls[0][0]).not.toContain("Kanban");
+    expect(session.steer.mock.calls[0][0]).not.toContain("handoff");
     expect(session.abort).not.toHaveBeenCalled();
     expect(result.steered).toBe(true);
   });

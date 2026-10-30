@@ -448,11 +448,15 @@ export class KanbanStore {
       return lease;
     });
   }
-  release(id: string, lease: Lease, error?: string, drained = false) {
+  release(id: string, lease: Lease, error?: string, drained = false, unusedRun = false) {
     return this.change(b => {
       const t = this.task(b, id);
       if (drained && t.executionLease?.token === lease.token) { t.executionLease = undefined; this.audit(t, lease.role, "snapshot worker drained"); }
       if (t.lease?.token !== lease.token) return;
+      if (unusedRun) {
+        t.runs = Math.max(0, t.runs - 1);
+        this.audit(t, "system", "unused worker run returned", { token: lease.token });
+      }
       this.status(t, this.workerIdentity(b, t, lease.role), error ? "error" : "finished", error ?? "Worker finished");
       t.lease = undefined;
       this.audit(t, lease.role, "worker released");

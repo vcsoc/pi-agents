@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -58,6 +58,23 @@ const data = (result: any) => JSON.parse(result.content[0].text);
 const spec = { holdInBacklog: true, title: "Native task", scope: "Verify native ownership", assignee: "operate", rubric: [{ title: "Native ownership preserved", weight: 100 }] };
 
 describe("harness-first extension lifecycle", () => {
+  it("removes only stale extension-owned Kanban context while off", () => {
+    const ordinary = { role: "user", content: "User instructions" };
+    const native = { role: "custom", customType: "subagent-notification", content: "Agent finished" };
+    const messages = [ordinary, { role: "custom", customType: "kanban-policy", content: "Old policy" }, native, { role: "custom", customType: "kanban-update", content: "Old board update" }];
+    expect(hooks.get("context")({ messages }).messages).toEqual([ordinary, native]);
+    state.toggle!(true);
+    expect(hooks.get("context")({ messages })).toBeUndefined();
+  });
+  it("does not initialize task storage through disabled commands", async () => {
+    const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
+    await command.handler("tasks", ctx);
+    await command.handler("tasks pause-all", ctx);
+    await command.handler("kban", ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Kanban is off"), "info");
+    expect(tools.has("Kanban")).toBe(false);
+    expect(existsSync(join(root, "agent", "kanban"))).toBe(false);
+  });
   it("reports the loaded package version without starting agents or opening the interface", async () => {
     expect(pi.registerCommand.mock.calls.some(([name]: [string]) => name === "agents")).toBe(false);
     const command = pi.registerCommand.mock.calls.find(([name]: [string]) => name === "crew")[1];
@@ -72,17 +89,24 @@ describe("harness-first extension lifecycle", () => {
     expect(vi.mocked(startKanbanServer).mock.calls).toHaveLength(opened);
     expect(tools.has("Kanban")).toBe(false);
   });
-  it("keeps native delegation and task tools usable with the interface off, on, then off", async () => {
-    await hooks.get("before_agent_start")({}, ctx);
-    expect(tools.has("Kanban")).toBe(true);
+  it("uses native delegation without task storage, policy or tools when off", async () => {
+    const policy = await hooks.get("before_agent_start")({ systemPrompt: "Original system" }, ctx);
+    expect(policy.systemPrompt).toContain("Original system");
+    expect(policy.systemPrompt).toContain("<direct_agent_workflow>");
+    expect(policy.systemPrompt).toContain("human-readable");
+    expect(policy.message).toBeUndefined();
+    expect(tools.has("Kanban")).toBe(false);
+    expect(existsSync(join(root, "agent", "kanban"))).toBe(false);
     expect(hooks.get("tool_call")?.({ toolName: "bash" }, ctx)?.block).not.toBe(true);
     const spawned = await call("Agent", { prompt: "fixture work", description: "Native fixture", subagent_type: "operate", run_in_background: true });
     const id = /Agent ID: (\S+)/.exec(spawned.content[0].text)![1];
     const manager = (globalThis as any)[managerKey];
     const record = manager.getRecord(id), signal = record.abortController.signal;
-    const created = data(await call("Kanban", { action: "create", ...spec }));
     state.toggle!(true);
-    await hooks.get("before_agent_start")({}, ctx);
+    const enabledPolicy = await hooks.get("before_agent_start")({}, ctx);
+    expect(enabledPolicy.message.customType).toBe("kanban-policy");
+    const created = data(await call("Kanban", { action: "create", ...spec }));
+    const staleTool = tools.get("Kanban");
     expect(signal.aborted).toBe(false);
     expect(hooks.get("tool_call")?.({ toolName: "Agent" }, ctx)?.block).not.toBe(true);
     // Native delegation remains usable while the optional interface is enabled.
@@ -95,14 +119,20 @@ describe("harness-first extension lifecycle", () => {
     expect(web.close).toHaveBeenCalledOnce();
     expect(signal.aborted).toBe(false);
     expect(manager.getRecord(id)).toBe(record);
-    expect(tools.get("Kanban").exposure).not.toBe("hidden");
+    expect(tools.get("Kanban").exposure).toBe("hidden");
+    expect(tools.get("Kanban").promptGuidelines).toEqual([]);
+    await expect(call("Kanban", { action: "list" })).rejects.toThrow("Kanban is off");
+    await expect(staleTool.execute("stale", { action: "list" })).rejects.toThrow("Kanban is off");
+    state.toggle!(true);
+    expect(tools.get("Kanban").exposure).toBe("direct");
     const view = data(await call("Kanban", { action: "list" }));
     expect(view.harnessRuns.find((run: any) => run.id === id).status).toBe("running");
     expect(view.tasks.find((task: any) => task.id === created.id).column).toBe("backlog");
     await call("Kanban", { action: "pause-agent", id });
     expect(signal.aborted).toBe(true);
   });
-  it("preserves a managed worker's binding, signal and snapshot across interface toggles", async () => {
+  it("preserves a managed worker's binding, signal and snapshot across mode toggles", async () => {
+    state.toggle!(true);
     await hooks.get("before_agent_start")({}, ctx);
     const task = data(await call("Kanban", { action: "create", ...spec }));
     await call("Kanban", { action: "ready", id: task.id });
@@ -135,17 +165,22 @@ describe("harness-first extension lifecycle", () => {
     state.toggle!(false); opened(web); await opening;
     expect(web.close).toHaveBeenCalledOnce();
     expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("#late"), "info");
-    expect(tools.get("Kanban").exposure).not.toBe("hidden");
+    expect(tools.get("Kanban").exposure).toBe("hidden");
   });
-  it("does not make task storage availability a prerequisite for native tools", async () => {
+  it("does not touch unavailable task storage while off, and falls back safely on enabled failure", async () => {
     rmSync(join(root, "agent"), { recursive: true, force: true });
     writeFileSync(join(root, "agent"), "not a directory");
     expect(() => hooks.get("before_agent_start")({}, ctx)).not.toThrow();
+    expect(ctx.ui.notify).not.toHaveBeenCalled();
+    state.toggle!(true);
+    const policy = hooks.get("before_agent_start")({}, ctx);
+    expect(policy).toBeUndefined();
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("ordinary tools remain available"), "warning");
     expect(tools.has("Agent")).toBe(true);
   });
   it("keeps task activation behind project trust without blocking ordinary tools", async () => {
     ctx.isProjectTrusted = () => false;
+    state.toggle!(true);
     await hooks.get("before_agent_start")({}, ctx);
     expect(tools.has("Kanban")).toBe(false);
     expect(tools.has("Agent")).toBe(true);

@@ -677,7 +677,10 @@ function observeRun(session: AgentSession, options: RunObserverOptions) {
       if (options.maxTurns != null) {
         if (!run.steered && turnCount >= options.maxTurns) {
           run.steered = true;
-          session.steer("You have reached your turn limit. Finish only your assigned task; ignore unrelated notifications. If this is a managed Kanban task and acceptance permits it, call KanbanTask handoff now before your final answer. Otherwise record a concise checkpoint with changed files, commands/results and the exact blocker; do not claim completion or bypass acceptance. Then provide your final answer now.");
+          const handoff = session.getActiveToolNames().includes("KanbanTask")
+            ? " If acceptance permits it, call KanbanTask handoff now before your final answer."
+            : "";
+          session.steer(`You have reached your turn limit. Finish only your assigned task; ignore unrelated notifications.${handoff} Record a concise checkpoint with changed files, commands/results and the exact blocker; do not claim completion without evidence. Then provide your final answer now.`);
         } else if (run.steered && turnCount >= options.maxTurns + graceTurns) {
           run.aborted = true;
           session.abort();

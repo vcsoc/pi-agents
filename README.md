@@ -299,7 +299,7 @@ Run `/crew demo` for a bounded native demonstration: two parallel workers answer
 
 When the optional Kanban interface is enabled, the command opens a separate, read-only **agents demo** virtual board, identified by SHA-256 of the literal `agents demo`. Four dummy task cards update live with running/completed states, agent outputs, and the final result. This board is in memory, resets for each demo, and never reads or writes the current project's board or dispatches managed tasks. With the interface off, the same demonstration runs natively and reports its result in Pi. Demo cards and scores are illustrative, not managed-task certification. Only one demo runs at a time.
 
-**The native Pi harness always owns execution.** Kanban is an optional live interface over the same harness task service, not a replacement mode. Agent, workflows, ordinary tools, results and steering remain available with it on or off. Toggling it never stops agents or discards their sessions. The native `Kanban` task tool and `/crew tasks` work without the web interface in trusted projects.
+**The native Pi harness always owns execution.** With Kanban off (the default), manage agents directly through `/crew`, Agent, results and steering. No Kanban tool, board initialization, task dispatch, rubric assignment or managed acceptance workflow is used; progress and results stay in the human-readable native agents harness. Complete small work directly and delegate only when useful, without unnecessary task handoffs or polling. Turning Kanban on enables its task tool, planning/acceptance workflow and web board in trusted projects. Turning it off hides the tool, removes its workflow guidance and stops new task dispatch without cancelling already-running workers or discarding sessions/evidence. Those workers can finish their existing checkpoint; subsequent roles wait until Kanban is enabled again. `/crew tasks` and `/crew kban` do not activate Kanban while it is off.
 
 Enable **Kanban** in `/crew` -> Settings (or set `"kanbanEnabled": true` in `subagents.json`), then run:
 
@@ -759,7 +759,7 @@ Most changes apply to new agents immediately. Options that change which tools or
 | `showModel` | `false` | Add model and reasoning level to the widget. Results and the viewer already show these. |
 | `viewerMarkdown` | `assistant` | `off`: plain text. `assistant`: format replies only. `all`: format tool results too; this can change how logs/diffs look. Press `m` in the viewer to switch. |
 | `fleetView` | `true` | Show the selectable main-chat/agent list below the editor. |
-| `kanbanEnabled` | `false` | Enable the optional live web interface at `/crew kban`. Native tools, task planning and execution remain available on or off; toggling never cancels work. Managed-task completion still requires recorded tests and three independent scores of at least 85%. |
+| `kanbanEnabled` | `false` | Enable Kanban task tools, planning/acceptance workflow, automatic dispatch and `/crew kban`. Off bypasses Kanban entirely for new work: manage native agents directly with readable progress. Existing workers/evidence are preserved; no new task roles dispatch while off. |
 | `widgetMode` | `background` | `all`: every agent. `background`: background only. `off`: no progress widget. |
 | `toolDescriptionMode` | `full` | `full`: detailed Agent help. `compact`: shorter help for smaller models. `custom`: your own help file. Applies next session. |
 
@@ -831,7 +831,7 @@ Running Pi inside Herdr does not currently give each in-process SDK child its
 own Herdr Agents-panel entry. The inspected host API registers agents against
 terminal panes, not independent child sessions; reporting every child against
 the inherited parent pane would overwrite the parent rather than group children.
-Native agents and workflows still operate normally with Kanban web on or off.
+Native agents and workflows operate normally with Kanban on or off. Off mode uses them directly, without the Kanban task workflow.
 See [Herdr compatibility](docs/herdr.md) for verified API limits and the required
 host-side capability. This Pi extension does not install integrations into
 other agent harnesses.

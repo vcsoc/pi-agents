@@ -1593,8 +1593,11 @@ export default function (pi: ExtensionAPI) {
     if (enabled === kanbanEnabled) return;
     kanbanEnabled = enabled;
     kanbanWebGeneration++;
+    if (kanban) {
+      pi.registerTool({ ...kanban.orchestratorTool(), exposure: enabled ? "direct" : "hidden", promptGuidelines: enabled ? [KANBAN_GUIDELINES] : [] });
+    }
     if (!enabled) {
-      // The web interface does not own harness execution or task capabilities.
+      // Existing workers drain safely; disabled mode never claims new task work.
       const web = kanbanWeb, demo = demoWeb;
       kanbanWeb = undefined; demoWeb = undefined;
       void web?.close().catch(error => currentCtx?.ui.notify(String(error), "error"));
@@ -1603,10 +1606,12 @@ export default function (pi: ExtensionAPI) {
   }
 
   function ensureKanban(ctx: ExtensionContext): KanbanController {
+    if (!kanbanEnabled) throw new Error("Kanban is off. Manage agents directly in /crew.");
     if (!ctx.isProjectTrusted()) throw new Error("Kanban workers require a trusted project.");
     if (!kanban) {
       const store = new KanbanStore(ctx.cwd, join(getAgentDir(), "kanban"));
       kanban = new KanbanController(store, {
+        enabled: () => kanbanEnabled,
         spawn: (type, prompt, binding, cwd, signal) => spawnTopLevel(pi, ctx, type, prompt, {
           description: "Kanban: " + type,
           kanban: binding, cwd, configCwd: ctx.cwd, isBackground: true, signal, maxTurns: 40,
@@ -1625,7 +1630,7 @@ export default function (pi: ExtensionAPI) {
         stop: id => { const workflow = workflowTasks.get(id); if (workflow) workflow.abortController.abort(); else manager.abort(id); },
         steer: (id, message) => { manager.steer(id, message); },
         validAgent: type => { const resolution = resolveSpawnType(type); return resolution.ok && !resolution.fellBackFrom && !!getAgentConfig(resolution.type); },
-        notify: message => pi.sendMessage({ customType: "kanban-update", content: message, display: true }, { triggerTurn: false, deliverAs: "followUp" }),
+        notify: message => { if (kanbanEnabled) pi.sendMessage({ customType: "kanban-update", content: message, display: true }, { triggerTurn: false, deliverAs: "followUp" }); },
       });
       pi.registerTool(kanban.orchestratorTool());
       kanban.start();
@@ -1637,10 +1642,17 @@ export default function (pi: ExtensionAPI) {
     binding?.assertAllowed("KanbanTask");
   });
 
-  pi.on("before_agent_start", (_event, ctx) => {
+  pi.on("context", event => {
+    if (!kanbanEnabled) return { messages: event.messages.filter(message => message.role !== "custom" || !["kanban-policy", "kanban-update"].includes(message.customType)) };
+  });
+
+  pi.on("before_agent_start", (event, ctx) => {
+    if (!kanbanEnabled) {
+      return { systemPrompt: `${event.systemPrompt ?? ctx.getSystemPrompt()}\n\n<direct_agent_workflow>\nManage work directly using the native Agent, result and steering tools and the /crew agents harness. Kanban is off: ignore previous Kanban workflow instructions; do not use its tools, create board tasks, assign rubrics or run managed acceptance handoffs.\nComplete small work directly; delegate only when useful and approved. Keep one implementation owner, avoid duplicate work, unnecessary handoffs and polling, and finish efficiently without skipping safety checks or tests.\nReport agent progress, blockers, validation and final results in concise, human-readable language through the native harness. Preserve existing workers and evidence; do not restart suspended work automatically.\n</direct_agent_workflow>` };
+    }
     if (!ctx.isProjectTrusted()) return;
     try { ensureKanban(ctx); }
-    catch (error) { ctx.ui.notify(`Harness task service unavailable; ordinary tools remain available: ${String(error)}`, "warning"); }
+    catch (error) { ctx.ui.notify(`Harness task service unavailable; ordinary tools remain available: ${String(error)}`, "warning"); return; }
     return { message: { customType: "kanban-policy", content: KANBAN_GUIDELINES, display: false } };
   });
 
@@ -4043,7 +4055,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
         {
           id: "kanbanEnabled",
           label: "Kanban",
-          description: "Optional live web view at /crew kban. Native tools and task execution remain available with the board on or off. Turning it off closes only the web interface.",
+          description: "Enable Kanban planning, task tools, automatic dispatch and the /crew kban web view. Off uses native agents directly, without board tasks or managed acceptance workflows.",
           currentValue: kanbanEnabled ? "on" : "off",
           values: ["on", "off"],
         },
@@ -4243,7 +4255,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
         notifyApplied(ctx, `Viewer markdown set to ${value}`);
       } else if (id === "kanbanEnabled") {
         setKanbanEnabled(value === "on");
-        notifyApplied(ctx, `Kanban ${kanbanEnabled ? "enabled. Open /crew kban" : "interface disabled; harness work continues"}`);
+        notifyApplied(ctx, `Kanban ${kanbanEnabled ? "enabled. Open /crew kban" : "off; manage agents directly in /crew. Existing workers are preserved"}`);
       } else if (id === "fleetView") {
         const enabled = value === "on";
         setFleetViewEnabled(enabled);
@@ -4425,13 +4437,8 @@ Write the file using the write tool. Only write the file, nothing else.`;
             run: async (name, prompt, signal) => {
               const { record } = await manager.spawnAndWait(pi, ctx, "operate", prompt, {
                 description: name, isolated: true, inheritContext: false, thinkingLevel: "minimal", maxTurns: 2, signal,
-                kanban: {
-                  prompt: "Native read-only demonstration, not a managed Kanban task. Answer the assigned dummy question directly. Never use tools.",
-                  assertAllowed: toolName => {
-                    // The manager probes this capability before spawning. It is not registered as a demo tool.
-                    if (toolName !== "KanbanTask") throw new Error("Demo agents cannot execute tools");
-                  },
-                  tool: defineTool({ name: "DemoNoTools", label: "Demo read-only guard", description: "Unavailable during demo", parameters: Type.Object({}), execute: async () => { throw new Error("Demo agents cannot execute tools"); } }),
+                onSessionCreated: session => {
+                  session.agent.beforeToolCall = async () => ({ block: true, reason: "Demo agents cannot execute tools" });
                 },
               });
               record.resultConsumed = true;
@@ -4448,6 +4455,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
         return;
       }
       if (args.trim() === "tasks" || args.trim().startsWith("tasks ")) {
+        if (!kanbanEnabled) { ctx.ui.notify("Kanban is off. Manage agents directly in /crew; use Agent, results and steering for work updates.", "info"); return; }
         try {
           const controller = ensureKanban(ctx);
           const action = args.trim().slice(5).trim();
@@ -4456,7 +4464,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
           else if (action) throw new Error("Use /crew tasks, /crew tasks pause <run-id>, or /crew tasks pause-all");
           const view = controller.view();
           ctx.ui.notify([
-            "Harness tasks (Kanban web view is optional)",
+            "Kanban tasks and native harness runs",
             ...view.tasks.filter(task => !task.archived).map(task => `${task.id} / ${task.column}: ${task.title}`),
             ...view.harnessRuns.map(run => `${run.id} / ${run.status}: ${run.name}`),
           ].join("\n"), "info");
@@ -4465,7 +4473,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
       }
       if (args.trim() !== "kban") { await showAgentsMenu(ctx); return; }
       try {
-        if (!kanbanEnabled) { ctx.ui.notify("Enable the optional Kanban interface in /crew > Settings first. Harness task tools remain available.", "info"); return; }
+        if (!kanbanEnabled) { ctx.ui.notify("Kanban is off. Manage agents directly in /crew, or enable Kanban in /crew > Settings.", "info"); return; }
         const controller = ensureKanban(ctx);
         if (!kanbanWeb) {
           const generation = kanbanWebGeneration;

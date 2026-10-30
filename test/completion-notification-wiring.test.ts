@@ -105,8 +105,10 @@ async function spawnBackground(
 describe("background completion notification wiring", () => {
   it("runs /crew demo natively with four bounded tool-free agents and no certification", async () => {
     vi.mocked(runAgent).mockImplementation(async (_ctx, _type, prompt, options) => {
-      expect(options.kanban).toBeDefined();
-      expect(() => options.kanban!.assertAllowed("bash")).toThrow(/cannot execute tools/);
+      expect(options.kanban).toBeUndefined();
+      const session = { agent: { beforeToolCall: undefined as any } };
+      options.onSessionCreated?.(session as any);
+      expect(await session.agent.beforeToolCall({ toolCall: { name: "bash" } })).toMatchObject({ block: true, reason: "Demo agents cannot execute tools" });
       return { ...completedRun(), responseText: prompt.includes("Calculate 2 + 2") ? "4" : prompt.includes("Reverse the letters") ? "tac" : '{"score":100,"passed":true}' };
     });
     const { pi, handlers } = makePi();
